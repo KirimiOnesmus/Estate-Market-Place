@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-display: "Linux Libertine", Georgia, "Times New Roman", serif;
+
+  --color-canvas: #f4f6f8;
+  --color-panel: #ffffff;
+  --color-ink: #1f2937;
+  --color-muted: #667085;
+  --color-line: #e2e7ec;
+  --color-soft: #f1f4f6;
+  --color-night: #151b20;
+  --color-night-panel: #1c242b;
+  --color-night-ink: #edf1f4;
+  --color-night-line: #34404a;
+  --color-night-soft: #27323a;
+  --color-green-soft: #eaf2ed;
+
+  --color-brand-50: #eef5f1;
+  --color-brand-100: #dce9e1;
+  --color-brand-200: #bed6c7;
+  --color-brand-300: #95bba3;
+  --color-brand-400: #6e9d81;
+  --color-brand-500: #4e8064;
+  --color-brand-600: #3b6b53;
+  --color-brand-700: #2f5946;
+  --color-brand-800: #244a3b;
+  --color-brand-900: #1b3d31;
+  --color-brand-950: #10291f;
+
+  --shadow-lift: 0 8px 24px rgb(15 23 42 / 7%);
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+    font-family: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    scrollbar-color: #b7c2c9 #f4f6f8;
+    scrollbar-width: thin;
+  }
+  :root.dark { color-scheme: dark; scrollbar-color: #52616b #151b20; }
+  * { box-sizing: border-box; }
+  body, button, input, select, textarea { font-family: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  h1, h2, h3 { font-family: "Linux Libertine", Georgia, "Times New Roman", serif; }
+  body { min-width: 320px; min-height: 100vh; margin: 0; }
+  button { cursor: pointer; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #7ea48f; outline-offset: 2px; }
+  ::selection { color: #18382a; background: #dce9e1; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #f4f6f8; }
+  ::-webkit-scrollbar-thumb { border: 3px solid #f4f6f8; border-radius: 999px; background: #b7c2c9; }
+  ::-webkit-scrollbar-thumb:hover { background: #91a0a9; }
+  :root.dark ::-webkit-scrollbar-track { background: #151b20; }
+  :root.dark ::-webkit-scrollbar-thumb { border-color: #151b20; background: #52616b; }
+  @media (forced-colors: active) { :root { scrollbar-color: auto; } }
+}
+
+html[data-text-size="small"] { font-size: 15px; }
+html[data-text-size="standard"] { font-size: 16px; }
+html[data-text-size="large"] { font-size: 18px; }
+
+/* Semantic headings stay consistent across every role workspace. */
+h1 { font-size: 1.9rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.2rem; }
+
+@layer components {
+  .surface-card { @apply rounded-xl border border-line bg-panel dark:border-night-line dark:bg-night-panel; }
+  .section-kicker { @apply text-[10px] font-bold uppercase tracking-[.12em] text-muted; }
+  .icon-button { @apply grid size-11 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-soft hover:text-ink disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-night-soft dark:hover:text-night-ink; }
+  .primary-button { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-brand-800 px-4 text-xs font-semibold text-white transition-colors hover:bg-brand-900 active:bg-brand-950 disabled:pointer-events-none disabled:opacity-50 dark:bg-brand-600 dark:hover:bg-brand-500; }
+  .secondary-button { @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-line bg-panel px-3.5 text-xs font-semibold text-ink transition-colors hover:bg-soft disabled:pointer-events-none disabled:opacity-50 dark:border-night-line dark:bg-night-panel dark:text-night-ink dark:hover:bg-night-soft; }
+  .text-link { @apply inline-flex min-h-11 items-center gap-1.5 rounded-md px-1 text-xs font-semibold text-brand-800 hover:underline hover:underline-offset-4 dark:text-brand-300; }
+  .search-field { @apply flex min-h-11 w-full max-w-xl items-center gap-2.5 rounded-lg border border-line bg-panel px-3.5 text-muted focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-100 dark:border-night-line dark:bg-night-panel dark:focus-within:ring-brand-950; }
+  .search-field input { @apply min-w-0 flex-1 border-0 bg-transparent text-sm text-ink outline-none placeholder:text-muted dark:text-night-ink; }
+  .select-field { @apply min-h-11 rounded-lg border border-line bg-panel px-3 text-xs font-medium text-ink outline-none dark:border-night-line dark:bg-night-panel dark:text-night-ink; }
+  .field-label { @apply mb-1.5 block text-xs font-semibold text-ink dark:text-night-ink; }
+  .form-control { @apply min-h-11 w-full rounded-lg border border-line bg-panel px-3 py-2.5 text-sm text-ink outline-none transition placeholder:text-muted focus:border-brand-400 focus:ring-2 focus:ring-brand-100 dark:border-night-line dark:bg-night-panel dark:text-night-ink dark:focus:ring-brand-950; }
+  .field-error { @apply mt-1 block text-xs font-medium text-red-700 dark:text-red-300; }
+  .status-pill { @apply inline-flex min-h-7 items-center gap-1.5 rounded-md px-2.5 text-[10px] font-semibold; }
+  .status-live, .status-done { @apply bg-green-soft text-green-800 dark:bg-green-950 dark:text-green-200; }
+  .status-info { @apply bg-blue-50 text-blue-900 dark:bg-blue-950 dark:text-blue-200; }
+  .status-warning { @apply bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200; }
+}
+
+.toast { @apply pointer-events-none fixed bottom-20 left-1/2 z-[60] flex min-h-11 max-w-[calc(100vw-32px)] -translate-x-1/2 translate-y-3 items-center gap-2.5 rounded-lg bg-ink px-4 py-2.5 text-xs font-medium text-white opacity-0 shadow-xl transition duration-200 dark:bg-night-ink dark:text-night; }
+.toast[data-visible="true"] { @apply translate-y-0 opacity-100; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+@media (forced-colors: active) { button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid Highlight; } }

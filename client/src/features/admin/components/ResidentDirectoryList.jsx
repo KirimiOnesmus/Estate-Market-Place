@@ -1,0 +1,18 @@
+import { FiMail, FiPhone, FiUsers } from 'react-icons/fi'
+import { EmptyState } from '../../../shared/components/EmptyState.jsx'
+
+export function ResidentDirectoryList({ residents, compact = false, onManage }) {
+  if (!residents.length) return <EmptyState icon={FiUsers} title="No residents found" text="Try another name, email address, or household." />
+  if (compact) return <div className="divide-y divide-line dark:divide-night-line">{residents.map((resident) => <article key={resident.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5"><div className="min-w-0"><h3 className="truncate text-sm font-semibold">{resident.name}</h3><span className="mt-1 block truncate text-xs text-muted">{resident.email}</span></div><div className="text-right"><b className="block text-xs">{resident.unit}</b><span className="mt-1 block text-[11px] text-muted">{resident.householdSize} household members</span></div></article>)}</div>
+  return <div className="@container">
+    <div className="hidden grid-cols-[minmax(130px,1.2fr)_minmax(130px,1fr)_minmax(110px,.8fr)_minmax(140px,1fr)_minmax(110px,.8fr)_auto] gap-3 border-b border-line bg-soft px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-muted @4xl:grid dark:border-night-line dark:bg-night-soft"><span>Household holder</span><span>Contact</span><span>Household</span><span>Next of kin</span><span>Account setup</span><span>Actions</span></div>
+    <div className="divide-y divide-line dark:divide-night-line">{residents.map((resident) => <article key={resident.id} className="grid min-w-0 gap-3 p-4 @4xl:grid-cols-[minmax(130px,1.2fr)_minmax(130px,1fr)_minmax(110px,.8fr)_minmax(140px,1fr)_minmax(110px,.8fr)_auto] @4xl:items-center @4xl:gap-3 sm:p-5">
+      <div className="min-w-0"><h3 className="truncate text-sm font-semibold">{resident.name}</h3><span className="mt-1 block text-xs text-muted">{resident.id}{resident.isHouseholdHolder ? ' · Household holder' : ''}{resident.committeeMember ? ' · Committee member' : ''}</span></div>
+      <div className="min-w-0"><span className="flex items-center gap-1.5 truncate text-xs text-muted"><FiMail size={12} />{resident.email}</span><span className="mt-1 flex items-center gap-1.5 text-xs text-muted"><FiPhone size={12} />{resident.phone}</span></div>
+      <div className="text-xs"><b className="font-semibold">{resident.unit}</b><span className="mt-1 block text-muted">{resident.householdSize} members · {resident.occupancy}</span></div>
+      <div className="min-w-0 text-xs"><b className="block truncate font-semibold">{resident.nextOfKin?.name || 'Not added'}</b><span className="mt-1 block truncate text-muted">{resident.nextOfKin?.email || resident.nextOfKin?.phone || 'No contact details'}</span></div>
+      <div className="text-xs"><span className={`status-pill ${resident.mustResetPassword ? 'status-warning' : 'status-info'}`}>{resident.accountStatus || 'Account setup pending'}</span>{resident.mustResetPassword && <span className="mt-1 block text-[10px] text-muted">Password reset on first sign-in</span>}</div>
+      {onManage && <div className="flex flex-wrap gap-1.5 @4xl:max-w-52 @4xl:justify-end"><button className="secondary-button min-h-10 px-2.5 text-[11px]" onClick={() => onManage('reset', resident)}>Reset access</button>{resident.nextOfKin?.email && <button className="secondary-button min-h-10 px-2.5 text-[11px]" onClick={() => onManage('promote', resident)}>Promote next of kin</button>}<button className="secondary-button min-h-10 px-2.5 text-[11px] text-red-700 dark:text-red-300" onClick={() => onManage('remove', resident)}>Remove</button></div>}
+    </article>)}</div>
+  </div>
+}
