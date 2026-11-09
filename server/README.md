@@ -14,6 +14,12 @@ To create the initial Super Admin, set `BOOTSTRAP_ADMIN_NAME`, `BOOTSTRAP_ADMIN_
 
 The API listens on port 4000 by default. `GET /api/v1/health` reports process health; `GET /api/v1/ready` also checks the database connection. The React client is allowed from `CLIENT_ORIGIN` (default `http://localhost:5173`).
 
+## M-Pesa STK Push
+
+Giving uses Safaricom Daraja STK Push. Configure `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`, `MPESA_SHORTCODE`, `MPESA_PASSKEY`, and `MPESA_TRANSACTION_TYPE` in the server environment. Start with a Daraja sandbox app and set `MPESA_ENV=sandbox`. For callbacks, expose the API through a public HTTPS URL and set `MPESA_CALLBACK_URL` to the callback base ending in `/api/v1/mpesa/stk/callback`; set a long random `MPESA_CALLBACK_SECRET`. The callback handler appends the secret to the URL and only counts a contribution after the callback receipt, amount, and phone match the stored payment request.
+
+Keep all Daraja credentials server-side. The client never calls Safaricom directly. Live payments require Safaricom production credentials and a publicly reachable callback URL; payment requests remain unavailable until those values are configured.
+
 ## Current scope
 
 Implemented routes include:

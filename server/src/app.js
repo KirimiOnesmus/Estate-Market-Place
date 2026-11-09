@@ -13,6 +13,7 @@ const notFound = require('./middleware/not-found');
 const requestId = require('./middleware/request-id');
 const authRoutes = require('./modules/auth/routes');
 const householdRoutes = require('./modules/households/routes');
+const givingRoutes = require('./modules/giving/routes');
 const platformRoutes = require('./modules/platform/routes');
 
 const app = express();
@@ -39,6 +40,7 @@ app.get('/api/v1/ready', async (_req, res, next) => {
 
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1', platformRoutes);
+app.use('/api/v1', givingRoutes);
 app.use('/api/v1', householdRoutes);
 
 app.use(notFound);

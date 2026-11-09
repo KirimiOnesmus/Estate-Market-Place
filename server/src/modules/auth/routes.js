@@ -96,7 +96,7 @@ router.get('/setup-password/:token', setupLimit, asyncHandler(async (req, res) =
     where: { tokenHash: setupTokenHash(req.params.token) },
     include: { user: { select: { email: true, status: true } } },
   });
-  if (!challenge || challenge.purpose !== 'INITIAL_PASSWORD' || challenge.usedAt || challenge.expiresAt <= new Date() || challenge.user.status !== 'ACTIVE') {
+  if (!challenge || !['INITIAL_PASSWORD', 'PASSWORD_RESET'].includes(challenge.purpose) || challenge.usedAt || challenge.expiresAt <= new Date() || challenge.user.status !== 'ACTIVE') {
     throw new HttpError(404, 'SETUP_LINK_INVALID', 'This password setup link is invalid or expired.');
   }
   res.json({ data: { email: challenge.user.email, expiresAt: challenge.expiresAt }, requestId: req.id });
@@ -105,19 +105,20 @@ router.get('/setup-password/:token', setupLimit, asyncHandler(async (req, res) =
 router.post('/setup-password/:token', setupLimit, validate(setupPasswordSchema), asyncHandler(async (req, res) => {
   const tokenHash = setupTokenHash(req.params.token);
   const challenge = await prisma.passwordChallenge.findUnique({ where: { tokenHash } });
-  if (!challenge || challenge.purpose !== 'INITIAL_PASSWORD' || challenge.usedAt || challenge.expiresAt <= new Date()) {
+  if (!challenge || !['INITIAL_PASSWORD', 'PASSWORD_RESET'].includes(challenge.purpose) || challenge.usedAt || challenge.expiresAt <= new Date()) {
     throw new HttpError(404, 'SETUP_LINK_INVALID', 'This password setup link is invalid or expired.');
   }
   const passwordHash = await hashPassword(req.body.password);
   await prisma.$transaction(async (tx) => {
     const claimed = await tx.passwordChallenge.updateMany({
-      where: { id: challenge.id, purpose: 'INITIAL_PASSWORD', usedAt: null, expiresAt: { gt: new Date() } },
+      where: { id: challenge.id, purpose: challenge.purpose, usedAt: null, expiresAt: { gt: new Date() } },
       data: { usedAt: new Date() },
     });
     if (claimed.count !== 1) throw new HttpError(404, 'SETUP_LINK_INVALID', 'This password setup link is invalid or expired.');
     const user = await tx.user.findUnique({ where: { id: challenge.userId }, select: { status: true } });
     if (!user || user.status !== 'ACTIVE') throw new HttpError(403, 'ACCOUNT_INACTIVE', 'This account is not active.');
     await tx.user.update({ where: { id: challenge.userId }, data: { passwordHash, mustResetPassword: false } });
+    await tx.authSession.updateMany({ where: { userId: challenge.userId, revokedAt: null }, data: { revokedAt: new Date() } });
   });
   res.json({ data: { passwordSet: true }, requestId: req.id });
 }));

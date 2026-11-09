@@ -103,6 +103,14 @@ enum CommitteeDecision {
   REJECT
 }
 
+enum CampaignPaymentStatus {
+  INITIATED
+  PENDING
+  COMPLETED
+  FAILED
+  REVIEW_REQUIRED
+}
+
 enum ElectionStatus {
   OPEN
   CLOSED
@@ -212,6 +220,7 @@ model EstateMembership {
   electionVotes ElectionVote[]
   listings      MarketplaceListing[]
   issueReports  IssueReport[]
+  campaignPayments CampaignPayment[]
 
   @@unique([estateId, userId])
   @@unique([estateId, id])
@@ -411,6 +420,7 @@ model Campaign {
   estate              Estate     @relation(fields: [estateId], references: [id], onDelete: Restrict)
   beneficiaryHousehold Household? @relation("CampaignBeneficiary", fields: [beneficiaryHouseholdId], references: [id], onDelete: Restrict)
   votes               CampaignVote[]
+  payments            CampaignPayment[]
 
   @@index([estateId, status, updatedAt])
   @@index([beneficiaryHouseholdId])
@@ -430,6 +440,29 @@ model CampaignVote {
 
   @@unique([campaignId, voterMembershipId])
   @@index([campaignId, decision])
+}
+
+model CampaignPayment {
+  id                    String               @id @default(uuid()) @db.Uuid
+  campaignId            String               @db.Uuid
+  contributorMembershipId String             @db.Uuid
+  amount                Int
+  phone                 String
+  status                CampaignPaymentStatus @default(INITIATED)
+  merchantRequestId     String?
+  checkoutRequestId     String?              @unique
+  mpesaReceiptNumber    String?              @unique
+  resultCode            Int?
+  resultDescription     String?              @db.Text
+  createdAt             DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime             @updatedAt @db.Timestamptz(6)
+  completedAt           DateTime?            @db.Timestamptz(6)
+
+  campaign Campaign        @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  contributor EstateMembership @relation(fields: [contributorMembershipId], references: [id], onDelete: Restrict)
+
+  @@index([campaignId, status, createdAt])
+  @@index([contributorMembershipId, createdAt])
 }
 
 model Election {
@@ -517,16 +550,19 @@ model EstateNotice {
   category       String
   displayDate    String
   displayTime    String
+  expiresOn      String?
   createdAt      DateTime @default(now()) @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @db.Timestamptz(6)
 
   estate Estate @relation(fields: [estateId], references: [id], onDelete: Restrict)
 
   @@index([estateId, createdAt])
+  @@index([estateId, expiresOn])
 }
 
 model IssueReport {
   id                String            @id @default(uuid()) @db.Uuid
+  referenceCode      String            @unique
   estateId          String            @db.Uuid
   reporterMembershipId String         @db.Uuid
   title             String

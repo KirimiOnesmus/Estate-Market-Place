@@ -57,6 +57,7 @@ export function LoginPage({ onSuccess }) {
       </form>
 
       <p className="mt-5 flex items-center justify-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400"><FiShield size={13} />Secure sign-in for community members and administrators</p>
+      <p className="mt-3 text-center text-xs"><a href="/track-report" className="font-semibold text-brand-800 underline-offset-4 hover:underline dark:text-brand-300">Track a report with its reference code</a></p>
     </div>
   </main>
 }

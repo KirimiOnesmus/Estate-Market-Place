@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FiHome, FiPlus } from 'react-icons/fi'
 import { navigationByRole, headingFor } from './navigation.js'
 import { AppShell } from '../shared/components/AppShell.jsx'
@@ -9,7 +9,7 @@ import { ResidentOverviewPage } from '../features/resident/pages/OverviewPage.js
 import { MarketplacePage } from '../features/resident/pages/MarketplacePage.jsx'
 import { AddResidentPage } from '../features/admin/pages/AddResidentPage.jsx'
 import { FundraisersPage } from '../features/resident/pages/FundraisersPage.jsx'
-import { NoticesPage } from '../features/resident/pages/NoticesPage.jsx'
+import { NoticeDetailsPage, NoticesPage } from '../features/resident/pages/NoticesPage.jsx'
 import { IssuesPage } from '../features/resident/pages/IssuesPage.jsx'
 import { AdminOverviewPage } from '../features/admin/pages/OverviewPage.jsx'
 import { AdminCampaignsPage } from '../features/admin/pages/CampaignsPage.jsx'
@@ -24,6 +24,7 @@ import { RegistrationLinkPage } from '../features/admin/pages/RegistrationLinkPa
 import { SelfRegistrationPage } from '../features/resident/pages/SelfRegistrationPage.jsx'
 import { LoginPage } from '../features/resident/pages/LoginPage.jsx'
 import { SetupPasswordPage } from '../features/resident/pages/SetupPasswordPage.jsx'
+import { PublicIssueTrackingPage } from '../features/resident/pages/PublicIssueTrackingPage.jsx'
 import { CampaignDetailsPage } from '../features/admin/pages/CampaignDetailsPage.jsx'
 import { CampaignProgressPage } from '../features/admin/pages/CampaignProgressPage.jsx'
 import { CampaignPaymentPage } from '../features/resident/pages/CampaignPaymentPage.jsx'
@@ -34,6 +35,8 @@ import { MarketplaceCartPage } from '../features/resident/pages/MarketplaceCartP
 import { ResidentServicesPage } from '../features/resident/pages/ResidentServicesPage.jsx'
 import { CreatePollPage } from '../features/admin/pages/CreatePollPage.jsx'
 import { ElectionsPage } from '../features/admin/pages/ElectionsPage.jsx'
+import { CommitteePage } from '../features/admin/pages/CommitteePage.jsx'
+import { ResidentDetailsPage } from '../features/admin/pages/ResidentDetailsPage.jsx'
 import { ResidentElectionsPage } from '../features/resident/pages/ElectionsPage.jsx'
 import { CommitteeOverviewPage } from '../features/committee/pages/OverviewPage.jsx'
 import { CampaignVotesPage } from '../features/committee/pages/CampaignVotesPage.jsx'
@@ -51,9 +54,11 @@ import { CreateSupportCasePage } from '../features/super-admin/pages/CreateSuppo
 import { api } from '../api.js'
 
 export default function App() {
-  const [role, setRole] = useState(() => ['/register', '/login', '/setup-password'].includes(window.location.pathname) ? 'resident' : resolveSignedInRole())
-  const [page, setPage] = useState(() => window.location.pathname === '/register' ? 'self-register' : window.location.pathname === '/login' ? 'login' : window.location.pathname === '/setup-password' ? 'setup-password' : 'home')
+  const initialPath = useRef(window.location.pathname)
+  const [role, setRole] = useState(() => roleFromPath(window.location.pathname) || 'resident')
+  const [page, setPage] = useState(() => initialPageForPath(window.location.pathname))
   const [authenticatedSession, setAuthenticatedSession] = useState(null)
+  const [sessionCheckStatus, setSessionCheckStatus] = useState('checking')
   const [theme, setTheme] = useState(() => window.localStorage.getItem('pavilion-theme') || 'light')
   const [textSize, setTextSize] = useState(() => window.localStorage.getItem('pavilion-text-size') || 'standard')
   const [pageWidth, setPageWidth] = useState(() => window.localStorage.getItem('pavilion-page-width') || 'standard')
@@ -78,6 +83,7 @@ export default function App() {
   const [purchases, setPurchases] = useState([])
   const [toastMessage, setToastMessage] = useState('')
   const [residents, setResidents] = useState([])
+  const [selectedResidentId, setSelectedResidentId] = useState(null)
   const [residentRequests, setResidentRequests] = useState([])
   const [locations, setLocations] = useState([])
   const [estateAdminOverview, setEstateAdminOverview] = useState(null)
@@ -226,6 +232,15 @@ export default function App() {
   }, [authenticatedSession, campaignRefresh])
 
   useEffect(() => {
+    const campaignPages = ['home', 'fundraisers', 'votes', 'campaigns', 'campaign-detail', 'campaign-progress']
+    if (!authenticatedSession?.estate?.id || !campaignPages.includes(page)) return undefined
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') setCampaignRefresh((value) => value + 1)
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [authenticatedSession?.estate?.id, page])
+
+  useEffect(() => {
     if (!authenticatedSession?.estate?.id) return undefined
     let current = true
     api.listMarketplaceListings(['SUPER_ADMIN', 'ESTATE_ADMIN'].includes(authenticatedSession.role)).then((items) => {
@@ -272,18 +287,26 @@ export default function App() {
   }, [authenticatedSession, electionRefresh])
 
   useEffect(() => {
+    if (!authenticatedSession?.estate?.id || page !== 'elections') return undefined
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') setElectionRefresh((value) => value + 1)
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [authenticatedSession?.estate?.id, page])
+
+  useEffect(() => {
     const syncRoleFromPath = () => {
+      if (window.location.pathname === '/') { setRole('resident'); setPage('login'); window.history.replaceState({}, '', '/login'); return }
       if (window.location.pathname === '/register') { setRole('resident'); setPage('self-register'); return }
       if (window.location.pathname === '/login') { setRole('resident'); setPage('login'); return }
       if (window.location.pathname === '/setup-password') { setRole('resident'); setPage('setup-password'); return }
+      if (window.location.pathname === '/track-report') { setRole('resident'); setPage('track-report'); return }
       const nextRole = roleFromPath(window.location.pathname)
       if (nextRole) {
         setRole(nextRole)
         setPage('home')
       }
     }
-    const initialPathRole = roleFromPath(window.location.pathname)
-    if (!initialPathRole && !['/register', '/login', '/setup-password'].includes(window.location.pathname)) window.history.replaceState({}, '', `/${role}`)
     window.addEventListener('popstate', syncRoleFromPath)
     return () => window.removeEventListener('popstate', syncRoleFromPath)
   }, [role])
@@ -293,13 +316,24 @@ export default function App() {
     api.currentSession().then((session) => {
       if (!current) return
       setAuthenticatedSession(session)
-      if (!['/login', '/register', '/setup-password'].includes(window.location.pathname)) {
+      setSessionCheckStatus('ready')
+      if (initialPath.current === '/' || roleFromPath(initialPath.current)) {
         const nextRole = uiRoleForSession(session)
         setRole(nextRole)
         setPage('home')
         if (window.location.pathname !== `/${nextRole}`) window.history.replaceState({}, '', `/${nextRole}`)
       }
-    }).catch(() => {})
+    }).catch(() => {
+      if (!current) return
+      setAuthenticatedSession(null)
+      setSessionCheckStatus('ready')
+      const currentPath = window.location.pathname
+      if (currentPath === '/' || roleFromPath(currentPath)) {
+        setRole('resident')
+        setPage('login')
+        window.history.replaceState({}, '', '/login')
+      }
+    })
     return () => { current = false }
   }, [])
 
@@ -308,6 +342,7 @@ export default function App() {
   }, [role, page, platformSettings?.platformName])
 
   const notify = (message) => setToastMessage(message)
+  const refreshCampaignsAfterPayment = useCallback(() => setCampaignRefresh((value) => value + 1), [])
   const saveCampaign = async (campaign) => {
     const payload = {
       title: campaign.title,
@@ -350,7 +385,7 @@ export default function App() {
     } catch (requestError) { notify(requestError.message) }
   }
   const saveNotice = async (notice) => {
-    const payload = { title: notice.title, text: notice.text, category: notice.category, date: notice.date, time: notice.time }
+    const payload = { title: notice.title, text: notice.text, category: notice.category, date: notice.date, time: notice.time, deadline: notice.deadline }
     const saved = notice.id && notices.some((item) => item.id === notice.id)
       ? await api.updateNotice(notice.id, payload)
       : await api.createNotice(payload)
@@ -550,13 +585,31 @@ export default function App() {
     notify(`Order ${order.id} recorded. ${remaining === 0 ? 'The listing has been removed because it is sold out.' : `${remaining} item${remaining === 1 ? '' : 's'} remain.`}`)
   }
   const addToCart = (listing, quantity) => { setCart((items) => { const found = items.find((item) => item.listingId === listing.id); const nextQuantity = (found?.quantity || 0) + quantity; if (nextQuantity > (listing.quantity ?? 1)) { notify('There is not enough stock for that cart quantity.'); return items } return found ? items.map((item) => item.listingId === listing.id ? { ...item, quantity: nextQuantity } : item) : [...items, { listingId: listing.id, quantity }] }); notify(`${listing.title} added to your cart.`) }
-  const addContributionPrompt = (campaignId, residentId, amount, phone) => { setCampaigns((items) => items.map((campaign) => { if (campaign.id !== campaignId) return campaign; const payment = { id: `PAY-${crypto.randomUUID().slice(0, 8)}`, residentId, amount, phone, date: 'Prompt sent just now', status: 'Prompt sent' }; if (campaign.beneficiaryType === 'estate') return { ...campaign, contributions: campaign.contributions.map((account) => account.residentId !== residentId ? account : { ...account, payments: [...account.payments, payment] }) }; return { ...campaign, donations: [...(campaign.donations || []), { ...payment, resident: 'Amara Kimani' }] } })); notify('Payment prompt recorded in this preview. No mobile money prompt was sent.') }
-  const confirmContributionPayment = (campaignId, residentId, paymentId) => { setCampaigns((items) => items.map((campaign) => { if (campaign.id !== campaignId) return campaign; let paymentAmount = 0; let nextCampaign; if (campaign.beneficiaryType === 'estate') { const contributions = campaign.contributions.map((account) => account.residentId !== residentId ? account : { ...account, payments: account.payments.map((payment) => { if (payment.id !== paymentId || payment.status !== 'Prompt sent') return payment; paymentAmount = payment.amount; return { ...payment, status: 'Paid', date: 'Paid just now' } }) }); nextCampaign = { ...campaign, contributions } } else { const donations = (campaign.donations || []).map((payment) => { if (payment.id !== paymentId || payment.residentId !== residentId || payment.status !== 'Prompt sent') return payment; paymentAmount = payment.amount; return { ...payment, status: 'Paid', date: 'Paid just now' } }); nextCampaign = { ...campaign, donations } } if (!paymentAmount) return campaign; const raised = campaign.raised + paymentAmount; return { ...nextCampaign, raised, updated: 'Payment recorded just now', progressUpdates: [...(campaign.progressUpdates || []), { label: 'Resident payment recorded', date: 'Today', raised }] } })); notify('Payment recorded in this preview. Connect a payment provider to verify real transactions.') }
   const retryEstateAdminData = () => { setEstateAdminStatus('loading'); setEstateAdminError(''); setEstateAdminRefresh((value) => value + 1) }
+  const saveResidentDetails = async (id, values) => {
+    const updated = await api.updateEstateHousehold(id, values)
+    setResidents((items) => items.map((resident) => resident.id === id ? { ...resident, ...updated } : resident))
+    setAuditRefresh((value) => value + 1)
+    notify('Resident details updated.')
+  }
+  const changeResidentAccess = async (resident, status) => {
+    const updated = await api.setEstateHouseholdAccess(resident.id, status)
+    setResidents((items) => items.map((item) => item.id === resident.id ? { ...item, membershipStatus: updated.membershipStatus } : item))
+    setAuditRefresh((value) => value + 1)
+    notify(status === 'REMOVED' ? 'Resident deactivated.' : 'Resident reactivated.')
+  }
+  const changeResidentCommitteeRole = async (resident, committeeMember) => {
+    await api.setResidentCommitteeStatus(resident.id, committeeMember)
+    setResidents((items) => items.map((item) => item.id === resident.id ? { ...item, committeeMember } : item))
+    setAuditRefresh((value) => value + 1)
+    notify(committeeMember ? 'Resident added to the committee.' : 'Committee role removed.')
+  }
+  const issueResidentPasswordLink = (resident) => api.createResidentPasswordLink(resident.id)
+  const openResidentDetails = (resident) => { setSelectedResidentId(resident.id); navigate('resident-detail') }
 
   const resolvePage = () => {
-    if (page === 'home' && role === 'resident') return <ResidentOverviewPage listings={listings} notices={notices} reports={reports} savedIds={savedIds} toggleSaved={(id) => setSavedIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} navigate={navigate} notify={notify} />
-    if (page === 'home' && role === 'admin') return <AdminOverviewPage overview={estateAdminOverview} residents={residents} residentRequests={residentRequests} loading={estateAdminStatus === 'loading'} error={estateAdminError} onRetry={retryEstateAdminData} navigate={navigate} />
+    if (page === 'home' && role === 'resident') return <ResidentOverviewPage listings={listings} campaigns={campaigns} notices={notices} reports={reports} savedIds={savedIds} toggleSaved={(listingId) => setSavedIds((items) => items.includes(listingId) ? items.filter((item) => item !== listingId) : [...items, listingId])} navigate={navigate} estateName={authenticatedSession?.estate?.name || 'your estate'} />
+    if (page === 'home' && role === 'admin') return <AdminOverviewPage overview={estateAdminOverview} residents={residents} residentRequests={residentRequests} notices={notices} reports={reports} loading={estateAdminStatus === 'loading'} error={estateAdminError} onRetry={retryEstateAdminData} navigate={navigate} onResidentSelect={openResidentDetails} />
     if (page === 'home' && role === 'committee') return <CommitteeOverviewPage campaigns={campaigns} navigate={navigate} />
     if (page === 'home' && role === 'super-admin') return <SuperAdminOverviewPage overview={platformOverview} estates={platformEstates} loading={platformOverviewStatus === 'loading'} error={platformOverviewError} onRetry={() => { setPlatformOverviewStatus('loading'); setPlatformOverviewError(''); setPlatformOverviewRefresh((value) => value + 1) }} navigate={navigate} />
     if (page === 'platform-estates' && role === 'super-admin') return <PlatformEstatesPage estates={platformEstates} loading={platformEstatesStatus === 'loading'} loadError={platformEstatesError} onRetry={() => { setPlatformEstatesStatus('loading'); setPlatformEstatesError(''); setPlatformEstatesRefresh((value) => value + 1) }} onAdd={() => { setSelectedPlatformEstate(null); navigate('platform-estate-new') }} onEdit={(estate) => { setSelectedPlatformEstate(estate); navigate('platform-estate-edit') }} onSetAccess={setPlatformEstateAccess} onSelectEstate={async (estate) => { try { completeLogin(await api.selectEstate(estate.id)); notify(`Opened ${estate.name}.`) } catch (requestError) { notify(requestError.message) } }} />
@@ -573,24 +626,27 @@ export default function App() {
     if (page === 'resident-space' && role !== 'resident') return <ResidentServicesPage navigate={navigate} />
     if (page === 'marketplace-review' && role === 'admin') return <MarketplaceReviewPage listings={listings} status={listingStatus} error={listingError} onRetry={() => setListingRefresh((value) => value + 1)} onView={(listing) => { setSelectedListingId(listing.id); navigate('marketplace-detail') }} onApprove={(listing) => reviewMarketplaceListing(listing, 'APPROVED')} onRemove={(listing) => reviewMarketplaceListing(listing, 'REMOVED')} />
     if (page === 'marketplace-detail' && role === 'admin') return <MarketplaceListingDetailsPage listing={selectedListing} navigate={navigate} onApprove={(listing) => reviewMarketplaceListing(listing, 'APPROVED')} onRemove={(listing) => { reviewMarketplaceListing(listing, 'REMOVED'); navigate('marketplace-review') }} />
-    if (page === 'marketplace') { const visibleListings = filteredListings.filter((listing) => listing.status !== 'Pending review' && listing.status !== 'Removed' && listing.status !== 'Sold' && (listing.quantity ?? 1) > 0); return <MarketplacePage listings={visibleListings} savedIds={savedIds} toggleSaved={(id) => setSavedIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onCreate={() => navigate('listing-new')} notify={notify} onView={(listing) => { setSelectedListingId(listing.id); navigate('marketplace-item') }} onCart={() => navigate('marketplace-cart')} cartCount={cart.reduce((sum, item) => sum + item.quantity, 0)} /> }
+    if (page === 'marketplace') { const visibleListings = filteredListings.filter((listing) => listing.status !== 'Pending review' && listing.status !== 'Removed' && listing.status !== 'Sold' && (listing.quantity ?? 1) > 0); return <MarketplacePage listings={visibleListings} savedIds={savedIds} toggleSaved={(id) => setSavedIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onCreate={() => navigate('listing-new')} onView={(listing) => { setSelectedListingId(listing.id); navigate('marketplace-item') }} onCart={() => navigate('marketplace-cart')} cartCount={cart.reduce((sum, item) => sum + item.quantity, 0)} loading={listingStatus === 'loading'} error={listingStatus === 'error' ? listingError : ''} onRetry={() => { setListingStatus('loading'); setListingError(''); setListingRefresh((value) => value + 1) }} /> }
     if (page === 'marketplace-item') return <ListingDetailsPage listing={selectedListing} navigate={navigate} onPurchase={completePurchase} onAddToCart={addToCart} onBid={(listing, amount) => { setListings((items) => items.map((item) => item.id === listing.id ? { ...item, bids: [...(item.bids || []), { amount, resident: 'Amara Kimani', date: new Date().toLocaleString(), status: 'Pending seller response' }] } : item)); notify('Your bid was recorded in this preview.') }} />
     if (page === 'marketplace-cart') return <MarketplaceCartPage cart={cart} listings={listings} purchases={purchases} navigate={navigate} onRemove={(listingId) => setCart((items) => items.filter((item) => item.listingId !== listingId))} onCheckout={(items) => { items.forEach((item) => completePurchase(item.listing, item.quantity, item.paymentMethod)); setCart([]) }} />
     if (page === 'fundraisers') return <FundraisersPage campaigns={campaigns} loading={campaignStatus === 'loading'} error={campaignError} onRetry={() => setCampaignRefresh((value) => value + 1)} onContribute={(campaign) => { setSelectedCampaignId(campaign.id); navigate('campaign-payment') }} />
-    if (page === 'campaign-payment') return <CampaignPaymentPage campaign={selectedCampaign} navigate={navigate} onPrompt={addContributionPrompt} onConfirm={confirmContributionPayment} />
+    if (page === 'campaign-payment') return <CampaignPaymentPage key={selectedCampaignId} campaign={selectedCampaign} resident={authenticatedSession?.user} navigate={navigate} onPaymentConfirmed={refreshCampaignsAfterPayment} />
     if (page === 'notices' && role === 'admin') return <AdminNoticesPage notices={notices} status={noticeStatus} error={noticeError} onRetry={() => setNoticeRefresh((value) => value + 1)} navigate={navigate} onEdit={(notice) => { setSelectedNotice(notice); navigate('notice-edit') }} onDelete={deleteNotice} />
-    if (page === 'notices') return <NoticesPage notices={notices} loading={noticeStatus === 'loading'} error={noticeError} onRetry={() => setNoticeRefresh((value) => value + 1)} />
+    if (page === 'notices') return <NoticesPage notices={notices} loading={noticeStatus === 'loading'} error={noticeError} onRetry={() => setNoticeRefresh((value) => value + 1)} onNoticeSelect={(notice) => { setSelectedNotice(notice); navigate('notice-detail') }} />
+    if (page === 'notice-detail' && role !== 'admin') return <NoticeDetailsPage notice={selectedNotice} navigate={navigate} />
     if (page === 'issues' && role === 'admin') return <AdminIssuesPage reports={reports} status={reportStatus} error={reportError} onRetry={() => setReportRefresh((value) => value + 1)} onUpdate={updateIssueReport} />
     if (page === 'issues') return <IssuesPage reports={reports} loading={reportStatus === 'loading'} error={reportError} onRetry={() => setReportRefresh((value) => value + 1)} />
     if (page === 'campaigns' && role === 'admin') return <AdminCampaignsPage campaigns={campaigns} status={campaignStatus} error={campaignError} onRetry={() => setCampaignRefresh((value) => value + 1)} onPublish={publishCampaign} onView={(campaign, destination) => { setSelectedCampaignId(campaign.id); navigate(destination) }} />
     if (page === 'campaigns') return <FundraisersPage campaigns={campaigns} loading={campaignStatus === 'loading'} error={campaignError} onRetry={() => setCampaignRefresh((value) => value + 1)} onContribute={(campaign) => { setSelectedCampaignId(campaign.id); navigate('campaign-payment') }} />
     if (page === 'campaign-detail') return <CampaignDetailsPage campaign={selectedCampaign} navigate={navigate} />
     if (page === 'campaign-progress') return <CampaignProgressPage campaign={selectedCampaign} navigate={navigate} />
+    if (page === 'committee' && role === 'admin') return <CommitteePage residents={residents} onCreateElection={() => navigate('poll-new')} onViewElections={() => navigate('elections')} onResidentSelect={openResidentDetails} onRemoveMember={(resident) => changeResidentCommitteeRole(resident, false)} />
     if (page === 'elections' && role === 'admin') return <ElectionsPage polls={elections} status={electionStatus} error={electionError} onRetry={() => setElectionRefresh((value) => value + 1)} navigate={navigate} onClosePoll={closeCommitteeElection} />
     if (page === 'elections') return <ResidentElectionsPage polls={elections} loading={electionStatus === 'loading'} error={electionError} onRetry={() => setElectionRefresh((value) => value + 1)} onVote={castElectionVote} />
     if (page === 'poll-new' && role === 'admin') return <CreatePollPage residents={residents} onCancel={() => navigate('elections')} onCreate={createElection} />
     if (page === 'campaign-edit' && selectedCampaign) return <CreateEntityPage type="campaign" initialEntity={selectedCampaign} residents={residents} onCancel={() => navigate('campaign-detail')} onCreate={saveCampaign} />
-    if (page === 'residents' && role === 'admin') return <ResidentDirectoryPage residents={residents} requestCount={residentRequests.length} navigate={navigate} loading={estateAdminStatus === 'loading'} error={estateAdminError} onRetry={retryEstateAdminData} />
+    if (page === 'residents' && role === 'admin') return <ResidentDirectoryPage residents={residents} requestCount={residentRequests.length} navigate={navigate} onSelect={openResidentDetails} onPasswordLink={issueResidentPasswordLink} onToggleAccess={changeResidentAccess} loading={estateAdminStatus === 'loading'} error={estateAdminError} onRetry={retryEstateAdminData} />
+    if (page === 'resident-detail' && role === 'admin') return <ResidentDetailsPage key={selectedResidentId} resident={residents.find((resident) => resident.id === selectedResidentId)} locations={locations} onBack={() => navigate('residents')} onSave={saveResidentDetails} onSetAccess={changeResidentAccess} onPasswordLink={issueResidentPasswordLink} onCommitteeChange={changeResidentCommitteeRole} />
     if (page === 'resident-new' && role === 'admin') return <AddResidentPage locations={locations} existingHouseholds={residents} onCancel={() => navigate('residents')} onCreate={addEstateResident} />
     if (page === 'locations' && role === 'admin') return <LocationsPage locations={locations} navigate={navigate} loading={estateAdminStatus === 'loading'} error={estateAdminError} onRetry={retryEstateAdminData} />
     if (page === 'location-new' && role === 'admin') return <AddLocationPage onCancel={() => navigate('locations')} onCreate={async (location) => {
@@ -643,9 +699,13 @@ export default function App() {
       : role === 'super-admin' && page === 'platform-estates'
         ? { label: 'Add estate', icon: FiPlus, onClick: () => { setSelectedPlatformEstate(null); navigate('platform-estate-new') } }
       : undefined
-  const currentHeading = headingFor(role, page)
+  const currentHeading = role === 'resident' && page === 'home'
+    ? [new Intl.DateTimeFormat('en-KE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date()).toUpperCase(), `Welcome, ${authenticatedSession?.user?.fullName?.trim().split(/\s+/)[0] || 'neighbour'}`, `Here’s what’s happening around ${authenticatedSession?.estate?.name || 'your estate'}.`]
+    : headingFor(role, page)
   const activeEstate = role === 'super-admin' ? null : authenticatedSession?.estate || null
 
+  if (page === 'track-report') return <PublicIssueTrackingPage />
+  if (sessionCheckStatus === 'checking') return <div className="grid min-h-screen place-items-center bg-canvas text-sm text-muted dark:bg-night dark:text-night-ink" role="status">Checking your session…</div>
   if (page === 'self-register') return <SelfRegistrationPage />
   if (page === 'login') return <LoginPage onSuccess={completeLogin} />
   if (page === 'setup-password') return <SetupPasswordPage />
@@ -658,13 +718,12 @@ export default function App() {
   </AppShell>
 }
 
-function resolveSignedInRole() {
-  if (window.location.pathname === '/login' || window.location.pathname === '/register') return 'resident'
-  const pathRole = roleFromPath(window.location.pathname)
-  if (pathRole) return pathRole
-  const signedInRole = window.pavilionSession?.user?.role
-  const normalizedRole = typeof signedInRole === 'string' ? signedInRole.toLowerCase().replaceAll('_', '-') : ''
-  return navigationByRole[normalizedRole] ? normalizedRole : 'resident'
+function initialPageForPath(pathname) {
+  if (pathname === '/register') return 'self-register'
+  if (pathname === '/setup-password') return 'setup-password'
+  if (pathname === '/track-report') return 'track-report'
+  if (pathname === '/login' || pathname === '/') return 'login'
+  return roleFromPath(pathname) ? 'home' : 'login'
 }
 
 function uiRoleForSession(session) {

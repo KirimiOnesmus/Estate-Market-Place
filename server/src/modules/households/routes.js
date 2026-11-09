@@ -1,5 +1,6 @@
 const { Router } = require('express');
 const rateLimit = require('express-rate-limit');
+const { randomBytes } = require('node:crypto');
 const { z } = require('zod');
 
 const prisma = require('../../db/prisma');
@@ -29,6 +30,8 @@ const locationSchema = z.object({
 }).strict();
 const invitationSchema = z.object({ expiresInDays: z.coerce.number().int().min(1).max(30).default(7) }).strict();
 const addHouseholdSchema = registrationSchema;
+const householdUpdateSchema = registrationSchema;
+const membershipAccessSchema = z.object({ status: z.enum(['ACTIVE', 'REMOVED']) }).strict();
 const listingSchema = z.object({
   title: z.string().trim().min(3).max(120),
   description: z.string().trim().min(10).max(5000),
@@ -41,7 +44,11 @@ const listingSchema = z.object({
   images: z.array(z.string().max(3_500_000).regex(/^data:image\/(png|jpeg|webp|gif);base64,/)).min(3).max(6),
 }).strict();
 const listingDecisionSchema = z.object({ status: z.enum(['APPROVED', 'REMOVED']) }).strict();
-const noticeSchema = z.object({ title: z.string().trim().min(3).max(160), text: z.string().trim().min(10).max(5000), category: z.enum(['General', 'Facilities', 'Security', 'Community']), date: z.string().trim().min(2).max(100), time: z.string().trim().min(2).max(100) }).strict();
+const noticeDeadlineSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}, 'Choose a valid deadline date.');
+const noticeSchema = z.object({ title: z.string().trim().min(3).max(160), text: z.string().trim().min(10).max(5000), category: z.enum(['General', 'Facilities', 'Security', 'Community']), date: z.string().trim().min(2).max(100), time: z.string().trim().min(2).max(100), deadline: noticeDeadlineSchema }).strict();
 const issueSchema = z.object({ title: z.string().trim().min(3).max(160), description: z.string().trim().min(10).max(5000), category: z.string().trim().min(2).max(80), location: z.string().trim().min(2).max(180) }).strict();
 const issueUpdateSchema = z.object({ status: z.enum(['RECEIVED', 'IN_PROGRESS', 'RESOLVED']), message: z.string().trim().min(2).max(3000) }).strict();
 const campaignSchema = z.object({
@@ -62,10 +69,17 @@ const electionSchema = z.object({
   candidates: z.array(z.object({ householdId: z.string().uuid() }).strict()).min(2).max(30),
 }).strict().refine((value) => new Set(value.candidates.map((candidate) => candidate.householdId)).size === value.candidates.length, { message: 'A household can only appear once in an election.' });
 const candidateParamsSchema = z.object({ id: z.string().uuid() }).strict();
+const issueReferenceParamsSchema = z.object({ id: z.string().regex(/^ER-[A-F0-9]{4}-[A-F0-9]{12}$/) }).strict();
 const pageSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(10),
 }).strict();
+const issueTrackingLimit = rateLimit({ windowMs: 60 * 60_000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false });
+
+function createIssueReferenceCode() {
+  const code = randomBytes(8).toString('hex').toUpperCase();
+  return `ER-${code.slice(0, 4)}-${code.slice(4)}`;
+}
 
 function normalizeOccupancy(value) {
   return value.toUpperCase() === 'OWNER' ? 'OWNER_OCCUPIED' : 'TENANT_OCCUPIED';
@@ -104,7 +118,8 @@ function campaignDto(campaign) {
     title: campaign.title,
     purpose: campaign.description,
     target: campaign.targetAmount,
-    raised: 0,
+    raised: campaign.raisedAmount || 0,
+    contributors: campaign.contributorCount || 0,
     beneficiaryType: campaign.beneficiaryType.toLowerCase(),
     beneficiaryId: campaign.beneficiaryHouseholdId,
     beneficiary: campaign.beneficiaryLabel,
@@ -118,7 +133,29 @@ function campaignDto(campaign) {
   };
 }
 
+async function campaignsWithContributionTotals(campaigns) {
+  if (!campaigns.length) return [];
+  const totals = await prisma.campaignPayment.groupBy({
+    by: ['campaignId', 'contributorMembershipId'],
+    where: { campaignId: { in: campaigns.map((campaign) => campaign.id) }, status: 'COMPLETED' },
+    _sum: { amount: true },
+  });
+  const totalsByCampaign = new Map();
+  for (const item of totals) {
+    const total = totalsByCampaign.get(item.campaignId) || { raisedAmount: 0, contributorCount: 0 };
+    total.raisedAmount += item._sum.amount || 0;
+    total.contributorCount += 1;
+    totalsByCampaign.set(item.campaignId, total);
+  }
+  return campaigns.map((campaign) => campaignDto({ ...campaign, ...(totalsByCampaign.get(campaign.id) || {}) }));
+}
+
+async function campaignWithContributionTotals(campaign) {
+  return (await campaignsWithContributionTotals([campaign]))[0];
+}
+
 function electionDto(election, membershipId) {
+  const isCandidate = Boolean(membershipId && election.candidates.some((candidate) => candidate.home?.representativeId === membershipId));
   return {
     id: election.id,
     title: election.title,
@@ -134,6 +171,7 @@ function electionDto(election, membershipId) {
     })),
     totalVotes: election.votes.length,
     myVote: election.votes.find((vote) => vote.voterMembershipId === membershipId)?.candidateId || null,
+    isCandidate,
     winnerId: election.winnerCandidateId,
   };
 }
@@ -160,12 +198,26 @@ const listingInclude = {
   },
 };
 
+function nairobiCalendarDate(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function noticeDto(notice) {
+  return { id: notice.id, title: notice.title, text: notice.text, category: notice.category, date: notice.displayDate, time: notice.displayTime, deadline: notice.expiresOn, createdAt: notice.createdAt, unread: false };
+}
+
+function noticeIsCurrent(notice, today = nairobiCalendarDate()) {
+  return !notice.expiresOn || notice.expiresOn >= today;
+}
+
 const issueStatusLabel = { RECEIVED: 'Received', IN_PROGRESS: 'In progress', RESOLVED: 'Resolved' };
 function issueDto(report) {
   const updates = (report.updates || []).map((entry) => ({ status: issueStatusLabel[entry.status], message: entry.message, when: entry.createdAt.toISOString() }));
   const latest = updates.at(-1);
   return {
-    id: report.id, title: report.title, description: report.description, category: report.category,
+    id: report.referenceCode, referenceCode: report.referenceCode, title: report.title, description: report.description, category: report.category,
     location: report.location, status: issueStatusLabel[report.status],
     updated: new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium', timeStyle: 'short' }).format(report.updatedAt),
     update: latest?.message || 'The estate team has received the report.', updates,
@@ -177,7 +229,7 @@ async function loadElection(tx, id, membershipId) {
   return tx.election.findUnique({
     where: { id },
     include: {
-      candidates: { include: { _count: { select: { votes: true } } } },
+      candidates: { include: { _count: { select: { votes: true } }, home: { select: { representativeId: true } } } },
       votes: { select: { voterMembershipId: true, candidateId: true } },
     },
   }).then((election) => election ? electionDto(election, membershipId) : null);
@@ -388,32 +440,32 @@ router.patch('/admin/marketplace/listings/:id', requireAuth, requireSuperAdminFo
 router.get('/notices', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth.estate) throw new HttpError(403, 'ESTATE_CONTEXT_REQUIRED', 'Select an estate workspace first.');
   const notices = await prisma.estateNotice.findMany({ where: { estateId: req.auth.estate.id }, orderBy: { createdAt: 'desc' }, take: 200 });
-  res.json({ data: notices.map((notice) => ({ id: notice.id, title: notice.title, text: notice.text, category: notice.category, date: notice.displayDate, time: notice.displayTime, unread: false })), requestId: req.id });
+  res.json({ data: notices.filter(noticeIsCurrent).map(noticeDto), requestId: req.id });
 }));
 
 router.get('/admin/notices', requireAuth, requireSuperAdminForEstate, asyncHandler(async (req, res) => {
   const notices = await prisma.estateNotice.findMany({ where: { estateId: req.auth.estate.id }, orderBy: { createdAt: 'desc' }, take: 200 });
-  res.json({ data: notices.map((notice) => ({ id: notice.id, title: notice.title, text: notice.text, category: notice.category, date: notice.displayDate, time: notice.displayTime, unread: false })), requestId: req.id });
+  res.json({ data: notices.map(noticeDto), requestId: req.id });
 }));
 
 router.post('/admin/notices', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(noticeSchema), asyncHandler(async (req, res) => {
   const notice = await prisma.$transaction(async (tx) => {
-    const created = await tx.estateNotice.create({ data: { estateId: req.auth.estate.id, createdByUserId: req.auth.user.id, title: req.body.title, text: req.body.text, category: req.body.category, displayDate: req.body.date, displayTime: req.body.time } });
+    const created = await tx.estateNotice.create({ data: { estateId: req.auth.estate.id, createdByUserId: req.auth.user.id, title: req.body.title, text: req.body.text, category: req.body.category, displayDate: req.body.date, displayTime: req.body.time, expiresOn: req.body.deadline } });
     await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'NOTICE_PUBLISHED', entityType: 'EstateNotice', entityId: created.id, requestId: req.id, metadata: {} } });
     return created;
   });
-  res.status(201).json({ data: { id: notice.id, title: notice.title, text: notice.text, category: notice.category, date: notice.displayDate, time: notice.displayTime, unread: false }, requestId: req.id });
+  res.status(201).json({ data: noticeDto(notice), requestId: req.id });
 }));
 
 router.put('/admin/notices/:id', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), validate(noticeSchema), asyncHandler(async (req, res) => {
   const notice = await prisma.estateNotice.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id } });
   if (!notice) throw new HttpError(404, 'NOTICE_NOT_FOUND', 'Notice not found.');
   const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.estateNotice.update({ where: { id: notice.id }, data: { title: req.body.title, text: req.body.text, category: req.body.category, displayDate: req.body.date, displayTime: req.body.time } });
+    const row = await tx.estateNotice.update({ where: { id: notice.id }, data: { title: req.body.title, text: req.body.text, category: req.body.category, displayDate: req.body.date, displayTime: req.body.time, expiresOn: req.body.deadline } });
     await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'NOTICE_UPDATED', entityType: 'EstateNotice', entityId: notice.id, requestId: req.id, metadata: {} } });
     return row;
   });
-  res.json({ data: { id: updated.id, title: updated.title, text: updated.text, category: updated.category, date: updated.displayDate, time: updated.displayTime, unread: false }, requestId: req.id });
+  res.json({ data: noticeDto(updated), requestId: req.id });
 }));
 
 router.delete('/admin/notices/:id', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), asyncHandler(async (req, res) => {
@@ -424,6 +476,23 @@ router.delete('/admin/notices/:id', requireAuth, requireSuperAdminForEstate, req
     await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'NOTICE_DELETED', entityType: 'EstateNotice', entityId: notice.id, requestId: req.id, metadata: { title: notice.title } } });
   });
   res.json({ data: { id: notice.id, deleted: true }, requestId: req.id });
+}));
+
+router.get('/issues/track/:id', issueTrackingLimit, validate(issueReferenceParamsSchema, 'params'), asyncHandler(async (req, res) => {
+  const report = await prisma.issueReport.findUnique({
+    where: { referenceCode: req.params.id },
+    include: { updates: { orderBy: { createdAt: 'asc' } } },
+  });
+  if (!report) throw new HttpError(404, 'ISSUE_REPORT_NOT_FOUND', 'No report matches that reference code.');
+  res.json({ data: {
+    referenceCode: report.referenceCode,
+    title: report.title,
+    category: report.category,
+    status: issueStatusLabel[report.status],
+    submittedAt: report.createdAt,
+    updatedAt: report.updatedAt,
+    updates: report.updates.map((entry) => ({ status: issueStatusLabel[entry.status], message: entry.message, createdAt: entry.createdAt })),
+  }, requestId: req.id });
 }));
 
 router.get('/issues', requireAuth, asyncHandler(async (req, res) => {
@@ -440,15 +509,15 @@ router.get('/issues', requireAuth, asyncHandler(async (req, res) => {
 router.post('/issues', requireAuth, requireCsrf, validate(issueSchema), asyncHandler(async (req, res) => {
   if (!req.auth.estate || !req.auth.membership) throw new HttpError(403, 'ESTATE_MEMBERSHIP_REQUIRED', 'An active estate membership is required to submit an issue report.');
   const report = await prisma.$transaction(async (tx) => {
-    const created = await tx.issueReport.create({ data: { estateId: req.auth.estate.id, reporterMembershipId: req.auth.membership.id, ...req.body } });
+    const created = await tx.issueReport.create({ data: { estateId: req.auth.estate.id, reporterMembershipId: req.auth.membership.id, referenceCode: createIssueReferenceCode(), ...req.body } });
     await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'ISSUE_REPORT_SUBMITTED', entityType: 'IssueReport', entityId: created.id, requestId: req.id, metadata: { category: created.category } } });
     return tx.issueReport.findUnique({ where: { id: created.id }, include: { updates: true, reporter: { include: { user: { select: { fullName: true } } } } } });
   });
   res.status(201).json({ data: issueDto(report), requestId: req.id });
 }));
 
-router.patch('/admin/issues/:id', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), validate(issueUpdateSchema), asyncHandler(async (req, res) => {
-  const existing = await prisma.issueReport.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id } });
+router.patch('/admin/issues/:id', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(issueReferenceParamsSchema, 'params'), validate(issueUpdateSchema), asyncHandler(async (req, res) => {
+  const existing = await prisma.issueReport.findFirst({ where: { referenceCode: req.params.id, estateId: req.auth.estate.id } });
   if (!existing) throw new HttpError(404, 'ISSUE_REPORT_NOT_FOUND', 'Issue report not found.');
   const report = await prisma.$transaction(async (tx) => {
     await tx.issueReport.update({ where: { id: existing.id }, data: { status: req.body.status } });
@@ -472,6 +541,9 @@ router.get('/admin/households', requireAuth, requireSuperAdminForEstate, asyncHa
     name: household.representative.user.fullName || 'Resident',
     email: household.representative.user.email,
     phone: household.representative.user.phone,
+    locationId: household.locationId,
+    location: household.location?.label || 'Location',
+    unitNumber: household.unitCode,
     unit: `${household.location?.label || 'Location'} · ${household.unitCode}`,
     householdSize: household.householdSize,
     occupancy: household.occupancy === 'OWNER_OCCUPIED' ? 'Owner occupied' : 'Tenant occupied',
@@ -480,18 +552,85 @@ router.get('/admin/households', requireAuth, requireSuperAdminForEstate, asyncHa
     mustResetPassword: household.representative.user.mustResetPassword,
     isHouseholdHolder: true,
     committeeMember: household.representative.role === 'COMMITTEE_MEMBER',
+    membershipStatus: household.representative.status,
+    createdAt: household.createdAt,
   })), requestId: req.id });
+}));
+
+router.put('/admin/households/:id', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), validate(householdUpdateSchema), asyncHandler(async (req, res) => {
+  const household = await prisma.household.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id, status: 'VERIFIED' }, include: { representative: { include: { user: true } } } });
+  if (!household) throw new HttpError(404, 'HOUSEHOLD_NOT_FOUND', 'Resident household not found.');
+  const body = req.body;
+  const location = await prisma.estateLocation.findFirst({ where: { id: body.locationId, estateId: req.auth.estate.id, status: 'ACTIVE' } });
+  if (!location) throw new HttpError(422, 'INVALID_LOCATION', 'Choose an active block or street in this estate.');
+  const unitConflict = await prisma.household.findFirst({ where: { id: { not: household.id }, estateId: req.auth.estate.id, locationId: location.id, unitCode: { equals: body.unitCode, mode: 'insensitive' }, status: { in: ['PENDING_REVIEW', 'VERIFIED'] } } });
+  if (unitConflict) throw new HttpError(409, 'HOUSEHOLD_ALREADY_REGISTERED', 'That unit already belongs to another household.');
+  const contactConflict = await prisma.user.findFirst({ where: { id: { not: household.representative.userId }, OR: [{ email: body.email }, { phone: body.phone }] } });
+  if (contactConflict) throw new HttpError(409, 'ACCOUNT_CONFLICT', 'The email address or phone number is linked to another account.');
+  const updated = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.update({ where: { id: household.representative.userId }, data: { fullName: body.fullName, email: body.email, phone: body.phone } });
+    const home = await tx.household.update({ where: { id: household.id }, data: {
+      locationId: location.id, unitCode: body.unitCode, occupancy: normalizeOccupancy(body.occupancy), householdSize: body.householdSize,
+      nextOfKinName: body.nextOfKinName, nextOfKinPhone: body.nextOfKinPhone, nextOfKinEmail: body.nextOfKinEmail,
+    } });
+    await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'RESIDENT_DETAILS_UPDATED', entityType: 'Household', entityId: home.id, requestId: req.id, metadata: {} } });
+    return { home, user };
+  });
+  res.json({ data: { id: updated.home.id, membershipId: household.representative.id, name: updated.user.fullName, email: updated.user.email, phone: updated.user.phone, locationId: location.id, location: location.label, unit: `${location.label} · ${updated.home.unitCode}`, unitNumber: updated.home.unitCode, householdSize: updated.home.householdSize, occupancy: updated.home.occupancy === 'OWNER_OCCUPIED' ? 'Owner occupied' : 'Tenant occupied', nextOfKin: { name: updated.home.nextOfKinName, phone: updated.home.nextOfKinPhone, email: updated.home.nextOfKinEmail }, accountStatus: updated.user.mustResetPassword ? 'Password setup pending' : 'Active', mustResetPassword: updated.user.mustResetPassword, isHouseholdHolder: true, committeeMember: household.representative.role === 'COMMITTEE_MEMBER', membershipStatus: household.representative.status, createdAt: updated.home.createdAt }, requestId: req.id });
+}));
+
+router.patch('/admin/households/:id/access', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), validate(membershipAccessSchema), asyncHandler(async (req, res) => {
+  const household = await prisma.household.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id, status: 'VERIFIED' }, include: { representative: true } });
+  if (!household) throw new HttpError(404, 'HOUSEHOLD_NOT_FOUND', 'Resident household not found.');
+  const updated = await prisma.$transaction(async (tx) => {
+    const membership = await tx.estateMembership.update({ where: { id: household.representative.id }, data: { status: req.body.status } });
+    if (req.body.status === 'REMOVED') await tx.authSession.updateMany({ where: { membershipId: membership.id, revokedAt: null }, data: { revokedAt: new Date() } });
+    await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: req.body.status === 'REMOVED' ? 'RESIDENT_DEACTIVATED' : 'RESIDENT_REACTIVATED', entityType: 'EstateMembership', entityId: membership.id, requestId: req.id, metadata: { householdId: household.id } } });
+    return membership;
+  });
+  res.json({ data: { id: household.id, membershipStatus: updated.status }, requestId: req.id });
+}));
+
+router.post('/admin/households/:id/password-link', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), asyncHandler(async (req, res) => {
+  const household = await prisma.household.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id, status: 'VERIFIED' }, include: { representative: { include: { user: true } } } });
+  if (!household) throw new HttpError(404, 'HOUSEHOLD_NOT_FOUND', 'Resident household not found.');
+  if (household.representative.status !== 'ACTIVE') throw new HttpError(409, 'RESIDENT_INACTIVE', 'Reactivate this resident before generating a password link.');
+  const purpose = household.representative.user.mustResetPassword ? 'INITIAL_PASSWORD' : 'PASSWORD_RESET';
+  const token = createToken();
+  const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+  await prisma.$transaction(async (tx) => {
+    await tx.passwordChallenge.updateMany({ where: { userId: household.representative.userId, purpose, usedAt: null }, data: { usedAt: new Date() } });
+    await tx.passwordChallenge.create({ data: { userId: household.representative.userId, tokenHash: hashToken(token), purpose, expiresAt } });
+    await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: purpose === 'INITIAL_PASSWORD' ? 'RESIDENT_SETUP_LINK_REISSUED' : 'RESIDENT_PASSWORD_RESET_LINK_CREATED', entityType: 'EstateMembership', entityId: household.representative.id, requestId: req.id, metadata: { expiresAt: expiresAt.toISOString() } } });
+  });
+  const setupUrl = new URL('/setup-password', process.env.CLIENT_ORIGIN || 'http://localhost:5173');
+  setupUrl.searchParams.set('token', token);
+  res.status(201).json({ data: { setupUrl: setupUrl.toString(), expiresAt, email: household.representative.user.email }, requestId: req.id });
+}));
+
+router.patch('/admin/households/:id/committee', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), asyncHandler(async (req, res) => {
+  const body = z.object({ committeeMember: z.boolean() }).strict().safeParse(req.body);
+  if (!body.success) throw new HttpError(422, 'VALIDATION_ERROR', 'Choose whether this resident should be a committee member.', body.error.issues);
+  const household = await prisma.household.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id, status: 'VERIFIED' }, include: { representative: true } });
+  if (!household) throw new HttpError(404, 'HOUSEHOLD_NOT_FOUND', 'Resident household not found.');
+  if (household.representative.status !== 'ACTIVE') throw new HttpError(409, 'RESIDENT_INACTIVE', 'Only active residents can serve on the committee.');
+  const membership = await prisma.$transaction(async (tx) => {
+    const updated = await tx.estateMembership.update({ where: { id: household.representative.id }, data: { role: body.data.committeeMember ? 'COMMITTEE_MEMBER' : 'RESIDENT' } });
+    await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: body.data.committeeMember ? 'COMMITTEE_MEMBER_ADDED' : 'COMMITTEE_MEMBER_REMOVED', entityType: 'EstateMembership', entityId: updated.id, requestId: req.id, metadata: { householdId: household.id } } });
+    return updated;
+  });
+  res.json({ data: { id: household.id, committeeMember: membership.role === 'COMMITTEE_MEMBER' }, requestId: req.id });
 }));
 
 router.get('/campaigns', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth.estate) throw new HttpError(403, 'ESTATE_CONTEXT_REQUIRED', 'Select an estate workspace first.');
   const campaigns = await prisma.campaign.findMany({
-    where: { estateId: req.auth.estate.id, ...(req.auth.role === 'ESTATE_ADMIN' || req.auth.role === 'SUPER_ADMIN' ? {} : { status: 'LIVE' }) },
+    where: { estateId: req.auth.estate.id, ...(req.auth.role === 'ESTATE_ADMIN' || req.auth.role === 'SUPER_ADMIN' ? {} : { status: { in: ['LIVE', 'PENDING_REVIEW'] } }) },
     include: { votes: { select: { decision: true } } },
     orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
     take: 200,
   });
-  res.json({ data: campaigns.map(campaignDto), requestId: req.id });
+  res.json({ data: await campaignsWithContributionTotals(campaigns), requestId: req.id });
 }));
 
 router.post('/admin/campaigns', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(campaignSchema), asyncHandler(async (req, res) => {
@@ -531,7 +670,7 @@ router.post('/admin/campaigns', requireAuth, requireSuperAdminForEstate, require
     } });
     return created;
   });
-  res.status(201).json({ data: campaignDto(campaign), requestId: req.id });
+  res.status(201).json({ data: await campaignWithContributionTotals(campaign), requestId: req.id });
 }));
 
 router.put('/admin/campaigns/:id', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), validate(campaignSchema), asyncHandler(async (req, res) => {
@@ -562,7 +701,7 @@ router.put('/admin/campaigns/:id', requireAuth, requireSuperAdminForEstate, requ
     } });
     return campaign;
   });
-  res.json({ data: campaignDto(updated), requestId: req.id });
+  res.json({ data: await campaignWithContributionTotals(updated), requestId: req.id });
 }));
 
 router.post('/admin/campaigns/:id/publish', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), asyncHandler(async (req, res) => {
@@ -579,50 +718,59 @@ router.post('/admin/campaigns/:id/publish', requireAuth, requireSuperAdminForEst
     } });
     return updated;
   });
-  res.json({ data: campaignDto(campaign), requestId: req.id });
+  res.json({ data: await campaignWithContributionTotals(campaign), requestId: req.id });
 }));
 
 router.get('/committee/campaigns', requireAuth, requireCommittee, asyncHandler(async (req, res) => {
   const campaigns = await prisma.campaign.findMany({
     where: { estateId: req.auth.estate.id, status: { in: ['PENDING_REVIEW', 'LIVE', 'REJECTED'] } },
-    include: { votes: { select: { voterMembershipId: true, decision: true, reason: true } } },
+    include: { votes: { select: { voterMembershipId: true, decision: true, reason: true } }, beneficiaryHousehold: { select: { representativeId: true } } },
     orderBy: { updatedAt: 'desc' }, take: 200,
   });
-  res.json({ data: campaigns.map((campaign) => ({ ...campaignDto(campaign), ownVote: campaign.votes.find((vote) => vote.voterMembershipId === req.auth.membership.id) || null })), requestId: req.id });
+  const campaignData = await campaignsWithContributionTotals(campaigns);
+  res.json({ data: campaignData.map((campaign, index) => ({ ...campaign, ownVote: campaigns[index].votes.find((vote) => vote.voterMembershipId === req.auth.membership.id) || null, isOwnBeneficiary: campaigns[index].beneficiaryHousehold?.representativeId === req.auth.membership.id })), requestId: req.id });
 }));
 
 router.post('/committee/campaigns/:id/votes', requireAuth, requireCommittee, requireCsrf, validate(candidateParamsSchema, 'params'), validate(committeeVoteSchema), asyncHandler(async (req, res) => {
-  const campaign = await prisma.campaign.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id } });
+  const campaign = await prisma.campaign.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id }, select: { id: true, status: true, beneficiaryHouseholdId: true } });
   if (!campaign) throw new HttpError(404, 'CAMPAIGN_NOT_FOUND', 'Campaign not found.');
   if (campaign.status !== 'PENDING_REVIEW') throw new HttpError(409, 'CAMPAIGN_VOTING_CLOSED', 'Committee voting for this campaign is closed.');
-  const result = await prisma.$transaction(async (tx) => {
-    const current = await tx.campaign.findFirst({ where: { id: campaign.id, estateId: req.auth.estate.id, status: 'PENDING_REVIEW' }, select: { id: true } });
-    if (!current) throw new HttpError(409, 'CAMPAIGN_VOTING_CLOSED', 'Committee voting for this campaign is closed.');
-    await tx.campaignVote.upsert({
-      where: { campaignId_voterMembershipId: { campaignId: campaign.id, voterMembershipId: req.auth.membership.id } },
-      create: { campaignId: campaign.id, voterMembershipId: req.auth.membership.id, decision: req.body.decision, reason: req.body.decision === 'REJECT' ? req.body.reason : null },
-      update: { decision: req.body.decision, reason: req.body.decision === 'REJECT' ? req.body.reason : null },
+  if (campaign.beneficiaryHouseholdId) {
+    const isBeneficiary = await prisma.household.findFirst({ where: { id: campaign.beneficiaryHouseholdId, estateId: req.auth.estate.id, representativeId: req.auth.membership.id }, select: { id: true } });
+    if (isBeneficiary) throw new HttpError(403, 'BENEFICIARY_CANNOT_VOTE', 'You cannot vote on a campaign that benefits your household.');
+  }
+  let result;
+  try {
+    result = await prisma.$transaction(async (tx) => {
+      const current = await tx.campaign.findFirst({ where: { id: campaign.id, estateId: req.auth.estate.id, status: 'PENDING_REVIEW' }, select: { id: true } });
+      if (!current) throw new HttpError(409, 'CAMPAIGN_VOTING_CLOSED', 'Committee voting for this campaign is closed.');
+      const existingVote = await tx.campaignVote.findUnique({ where: { campaignId_voterMembershipId: { campaignId: campaign.id, voterMembershipId: req.auth.membership.id } }, select: { id: true } });
+      if (existingVote) throw new HttpError(409, 'CAMPAIGN_VOTE_LOCKED', 'Your campaign vote is already recorded and cannot be changed.');
+      await tx.campaignVote.create({ data: { campaignId: campaign.id, voterMembershipId: req.auth.membership.id, decision: req.body.decision, reason: req.body.decision === 'REJECT' ? req.body.reason : null } });
+      const votes = await tx.campaignVote.findMany({ where: { campaignId: campaign.id }, select: { decision: true } });
+      const approvals = votes.filter((vote) => vote.decision === 'APPROVE').length;
+      const rejections = votes.filter((vote) => vote.decision === 'REJECT').length;
+      const status = approvals >= 3 ? 'LIVE' : rejections >= 3 ? 'REJECTED' : 'PENDING_REVIEW';
+      const updated = await tx.campaign.update({ where: { id: campaign.id }, data: { status }, include: { votes: { select: { decision: true, voterMembershipId: true, reason: true } } } });
+      await tx.auditEvent.create({ data: {
+        scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id,
+        action: req.body.decision === 'APPROVE' ? 'CAMPAIGN_APPROVED_BY_COMMITTEE' : 'CAMPAIGN_REJECTED_BY_COMMITTEE',
+        entityType: 'Campaign', entityId: campaign.id, requestId: req.id,
+        metadata: { ...(req.body.decision === 'REJECT' ? { reason: req.body.reason } : {}), approvals, rejections, status },
+      } });
+      return updated;
     });
-    const votes = await tx.campaignVote.findMany({ where: { campaignId: campaign.id }, select: { decision: true } });
-    const approvals = votes.filter((vote) => vote.decision === 'APPROVE').length;
-    const rejections = votes.filter((vote) => vote.decision === 'REJECT').length;
-    const status = approvals >= 3 ? 'LIVE' : rejections >= 3 ? 'REJECTED' : 'PENDING_REVIEW';
-    const updated = await tx.campaign.update({ where: { id: campaign.id }, data: { status }, include: { votes: { select: { decision: true, voterMembershipId: true, reason: true } } } });
-    await tx.auditEvent.create({ data: {
-      scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id,
-      action: req.body.decision === 'APPROVE' ? 'CAMPAIGN_APPROVED_BY_COMMITTEE' : 'CAMPAIGN_REJECTED_BY_COMMITTEE',
-      entityType: 'Campaign', entityId: campaign.id, requestId: req.id,
-      metadata: { ...(req.body.decision === 'REJECT' ? { reason: req.body.reason } : {}), approvals, rejections, status },
-    } });
-    return updated;
-  });
-  res.json({ data: { ...campaignDto(result), ownVote: result.votes.find((vote) => vote.voterMembershipId === req.auth.membership.id) || null }, requestId: req.id });
+  } catch (error) {
+    if (error.code === 'P2002') throw new HttpError(409, 'CAMPAIGN_VOTE_LOCKED', 'Your campaign vote is already recorded and cannot be changed.');
+    throw error;
+  }
+  res.json({ data: { ...(await campaignWithContributionTotals(result)), ownVote: result.votes.find((vote) => vote.voterMembershipId === req.auth.membership.id) || null }, requestId: req.id });
 }));
 
 router.get('/admin/elections', requireAuth, requireSuperAdminForEstate, asyncHandler(async (req, res) => {
   const elections = await prisma.election.findMany({
     where: { estateId: req.auth.estate.id },
-    include: { candidates: { include: { _count: { select: { votes: true } } } }, votes: { select: { voterMembershipId: true, candidateId: true } } },
+    include: { candidates: { include: { _count: { select: { votes: true } }, home: { select: { representativeId: true } } } }, votes: { select: { voterMembershipId: true, candidateId: true } } },
     orderBy: [{ createdAt: 'desc' }], take: 100,
   });
   res.json({ data: elections.map((election) => electionDto(election, req.auth.membership?.id)), requestId: req.id });
@@ -660,29 +808,70 @@ router.get('/elections', requireAuth, asyncHandler(async (req, res) => {
   if (!req.auth.estate) throw new HttpError(403, 'ESTATE_CONTEXT_REQUIRED', 'Select an estate workspace first.');
   const elections = await prisma.election.findMany({
     where: { estateId: req.auth.estate.id },
-    include: { candidates: { include: { _count: { select: { votes: true } } } }, votes: { select: { voterMembershipId: true, candidateId: true } } },
+    include: { candidates: { include: { _count: { select: { votes: true } }, home: { select: { representativeId: true } } } }, votes: { select: { voterMembershipId: true, candidateId: true } } },
     orderBy: [{ createdAt: 'desc' }], take: 100,
   });
   res.json({ data: elections.map((election) => electionDto(election, req.auth.membership?.id)), requestId: req.id });
+}));
+
+router.get('/committee/members', requireAuth, asyncHandler(async (req, res) => {
+  if (!req.auth.estate || !req.auth.membership) throw new HttpError(403, 'ESTATE_MEMBERSHIP_REQUIRED', 'An active estate membership is required to view the committee.');
+  const memberships = await prisma.estateMembership.findMany({
+    where: {
+      estateId: req.auth.estate.id,
+      role: 'COMMITTEE_MEMBER',
+      status: 'ACTIVE',
+      households: { some: { estateId: req.auth.estate.id, status: 'VERIFIED' } },
+    },
+    select: {
+      id: true,
+      user: { select: { fullName: true } },
+      households: {
+        where: { estateId: req.auth.estate.id, status: 'VERIFIED' },
+        orderBy: { createdAt: 'asc' },
+        take: 1,
+        select: {
+          unitCode: true,
+          location: { select: { label: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  res.json({ data: memberships.map((membership) => {
+    const household = membership.households[0];
+    return {
+      id: membership.id,
+      name: membership.user.fullName || 'Resident',
+      role: 'Committee representative',
+      household: `${household.location.label} · ${household.unitCode}`,
+    };
+  }), requestId: req.id });
 }));
 
 router.post('/elections/:id/vote', requireAuth, requireCsrf, validate(candidateParamsSchema, 'params'), asyncHandler(async (req, res) => {
   if (!req.auth.estate || !req.auth.membership) throw new HttpError(403, 'ESTATE_MEMBERSHIP_REQUIRED', 'An active household membership is required to vote.');
   const body = z.object({ candidateId: z.string().uuid() }).strict().safeParse(req.body);
   if (!body.success) throw new HttpError(422, 'VALIDATION_ERROR', 'Choose a candidate to vote for.', body.error.issues);
-  const election = await prisma.election.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id }, include: { candidates: { select: { id: true } } } });
+  const election = await prisma.election.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id }, include: { candidates: { select: { id: true, home: { select: { representativeId: true } } } } } });
   if (!election || election.status !== 'OPEN' || election.closesAt < new Date()) throw new HttpError(409, 'ELECTION_CLOSED', 'This election is not accepting votes.');
+  if (election.candidates.some((candidate) => candidate.home.representativeId === req.auth.membership.id)) throw new HttpError(403, 'CANDIDATE_CANNOT_VOTE', 'Candidates cannot vote in the election they are standing in.');
   if (!election.candidates.some((candidate) => candidate.id === body.data.candidateId)) throw new HttpError(422, 'INVALID_CANDIDATE', 'Choose a candidate in this election.');
   const vote = await prisma.electionVote.findUnique({ where: { electionId_voterMembershipId: { electionId: election.id, voterMembershipId: req.auth.membership.id } } });
   if (vote) throw new HttpError(409, 'ALREADY_VOTED', 'Your vote in this election has already been recorded.');
-  await prisma.$transaction(async (tx) => {
-    await tx.electionVote.create({ data: { electionId: election.id, candidateId: body.data.candidateId, voterMembershipId: req.auth.membership.id } });
-    await tx.auditEvent.create({ data: {
-      scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id,
-      action: 'COMMITTEE_ELECTION_VOTE_CAST', entityType: 'Election', entityId: election.id, requestId: req.id,
-      metadata: {},
-    } });
-  });
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.electionVote.create({ data: { electionId: election.id, candidateId: body.data.candidateId, voterMembershipId: req.auth.membership.id } });
+      await tx.auditEvent.create({ data: {
+        scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id,
+        action: 'COMMITTEE_ELECTION_VOTE_CAST', entityType: 'Election', entityId: election.id, requestId: req.id,
+        metadata: {},
+      } });
+    });
+  } catch (error) {
+    if (error.code === 'P2002') throw new HttpError(409, 'ALREADY_VOTED', 'Your vote in this election has already been recorded.');
+    throw error;
+  }
   res.status(201).json({ data: { electionId: election.id, candidateId: body.data.candidateId }, requestId: req.id });
 }));
 

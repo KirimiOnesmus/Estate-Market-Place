@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FiChevronDown } from 'react-icons/fi'
+import { FiCheck, FiChevronDown, FiCopy, FiExternalLink } from 'react-icons/fi'
 
 export function ReportList({ reports, onUpdate }) {
   return <div className="@container overflow-hidden">
@@ -14,13 +14,15 @@ export function ReportList({ reports, onUpdate }) {
 
 function ReportRow({ report, onUpdate }) {
   const [expanded, setExpanded] = useState(false)
+  const [trackingLinkCopied, setTrackingLinkCopied] = useState(false)
   const statusClass = report.status === 'Resolved' ? 'status-done' : report.status === 'In progress' ? 'status-warning' : 'status-info'
   return <article className="grid gap-3 p-4 @4xl:grid-cols-[minmax(0,1.5fr)_minmax(120px,.8fr)_minmax(140px,.8fr)_auto] @4xl:items-center sm:p-5">
-    <div><h3 className="text-sm font-semibold">{report.title}</h3><span className="mt-1 block text-xs text-muted">{report.id}<span className="px-1.5">·</span>{report.category}</span></div>
+    <div><h3 className="text-sm font-semibold">{report.title}</h3><span className="mt-1 block text-xs text-muted">Ref: {report.referenceCode || report.id}<span className="px-1.5">·</span>{report.category}</span></div>
     <div><span className={`status-pill ${statusClass}`}>{report.status}</span></div>
     <div className="text-xs text-muted"><span className="font-semibold text-ink dark:text-night-ink @4xl:hidden">Last update · </span>{report.updated}</div>
     <div className="flex flex-wrap gap-2 @4xl:justify-self-end">
       {onUpdate && <button className="secondary-button min-h-11" onClick={() => onUpdate(report)}>Update status</button>}
+      {!onUpdate && <><button className="secondary-button min-h-11" type="button" onClick={async () => { const url = `${window.location.origin}/track-report?reference=${encodeURIComponent(report.referenceCode || report.id)}`; try { await navigator.clipboard.writeText(url); setTrackingLinkCopied(true) } catch { setTrackingLinkCopied(false) } }}><FiCopy size={14} />{trackingLinkCopied ? <><FiCheck size={13} />Link copied</> : 'Copy tracking link'}</button><a className="secondary-button min-h-11" href={`/track-report?reference=${encodeURIComponent(report.referenceCode || report.id)}`} target="_blank" rel="noreferrer"><FiExternalLink size={14} />Track</a></>}
       <button className="secondary-button min-h-11" aria-expanded={expanded} aria-controls={`report-${report.id}`} onClick={() => setExpanded((value) => !value)}><FiChevronDown className={expanded ? 'rotate-180' : ''} size={15} />{expanded ? 'Hide details' : 'View details'}</button>
     </div>
     {expanded && <div id={`report-${report.id}`} className="grid gap-2 rounded-lg bg-soft p-3 text-xs leading-5 text-muted @4xl:col-span-4 sm:grid-cols-2 dark:bg-night-soft">
