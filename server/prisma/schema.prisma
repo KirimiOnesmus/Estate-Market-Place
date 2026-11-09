@@ -1,0 +1,559 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma-client-v4"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EstateAccessStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum MembershipRole {
+  RESIDENT
+  ESTATE_ADMIN
+  COMMITTEE_MEMBER
+  ACCOUNT_HOLDER
+}
+
+enum PlatformRole {
+  SUPER_ADMIN
+}
+
+enum MembershipStatus {
+  PENDING
+  ACTIVE
+  DECLINED
+  REMOVED
+}
+
+enum LocationStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum OccupancyStatus {
+  OWNER_OCCUPIED
+  TENANT_OCCUPIED
+  VACANT
+}
+
+enum HouseholdStatus {
+  PENDING_REVIEW
+  VERIFIED
+  REJECTED
+  INACTIVE
+}
+
+enum RegistrationStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  EXPIRED
+}
+
+enum ChallengePurpose {
+  INITIAL_PASSWORD
+  PASSWORD_RESET
+  EMAIL_VERIFICATION
+}
+
+enum AuditScope {
+  ESTATE
+  PLATFORM
+}
+
+enum SupportCaseStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum SupportPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+enum CampaignStatus {
+  DRAFT
+  PENDING_REVIEW
+  LIVE
+  REJECTED
+}
+
+enum CampaignBeneficiaryType {
+  ESTATE
+  RESIDENT
+}
+
+enum CommitteeDecision {
+  APPROVE
+  REJECT
+}
+
+enum ElectionStatus {
+  OPEN
+  CLOSED
+  TIE_REVIEW
+}
+
+enum ListingStatus {
+  PENDING_REVIEW
+  APPROVED
+  REMOVED
+  SOLD
+}
+
+enum IssueReportStatus {
+  RECEIVED
+  IN_PROGRESS
+  RESOLVED
+}
+
+model Estate {
+  id            String             @id @default(uuid()) @db.Uuid
+  name          String
+  location      String
+  logo          String?            @db.Text
+  accessStatus  EstateAccessStatus @default(ACTIVE)
+  billingStatus String             @default("UNCONFIGURED")
+  createdAt     DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime           @updatedAt @db.Timestamptz(6)
+
+  locations     EstateLocation[]
+  memberships   EstateMembership[]
+  households    Household[]
+  registrations RegistrationRequest[]
+  invitations   RegistrationInvitation[]
+  auditEvents   AuditEvent[]
+  sessions      AuthSession[]
+  supportCases  SupportCase[]
+  campaigns     Campaign[]
+  elections     Election[]
+  listings      MarketplaceListing[]
+  notices       EstateNotice[]
+  issueReports  IssueReport[]
+
+  @@index([accessStatus])
+}
+
+model User {
+  id                String        @id @default(uuid()) @db.Uuid
+  email             String?       @unique
+  phone             String?       @unique
+  passwordHash      String?
+  fullName          String?
+  platformRole      PlatformRole? @unique
+  status            UserStatus    @default(ACTIVE)
+  mustResetPassword Boolean       @default(true)
+  emailVerifiedAt   DateTime?     @db.Timestamptz(6)
+  phoneVerifiedAt   DateTime?     @db.Timestamptz(6)
+  createdAt         DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(6)
+
+  memberships        EstateMembership[]
+  challenges         PasswordChallenge[]
+  sessions           AuthSession[]
+  invitationsCreated RegistrationInvitation[]
+  auditEvents        AuditEvent[]
+  supportRequests    SupportCase[]   @relation("SupportRequester")
+  supportComments    SupportComment[]
+
+  @@index([status])
+}
+
+model EstateLocation {
+  id           String         @id @default(uuid()) @db.Uuid
+  estateId     String         @db.Uuid
+  label        String
+  unitCode     String
+  locationType String         @default("BLOCK")
+  status       LocationStatus @default(ACTIVE)
+  createdAt    DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime       @updatedAt @db.Timestamptz(6)
+
+  estate           Estate                @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  households       Household[]
+  locationRequests RegistrationRequest[]
+
+  @@unique([estateId, label, unitCode])
+  @@unique([estateId, id])
+  @@index([estateId, status])
+}
+
+model EstateMembership {
+  id           String           @id @default(uuid()) @db.Uuid
+  estateId     String           @db.Uuid
+  userId       String           @db.Uuid
+  role         MembershipRole   @default(RESIDENT)
+  status       MembershipStatus @default(PENDING)
+  approvedById String?          @db.Uuid
+  approvedAt   DateTime?        @db.Timestamptz(6)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(6)
+
+  estate     Estate        @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  user       User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  households Household[]
+  sessions   AuthSession[]
+  campaignVotes CampaignVote[]
+  electionVotes ElectionVote[]
+  listings      MarketplaceListing[]
+  issueReports  IssueReport[]
+
+  @@unique([estateId, userId])
+  @@unique([estateId, id])
+  @@index([estateId, status, role])
+  @@index([userId, status])
+}
+
+model Household {
+  id               String          @id @default(uuid()) @db.Uuid
+  estateId         String          @db.Uuid
+  locationId       String          @db.Uuid
+  representativeId String          @db.Uuid
+  unitCode         String          @default("")
+  occupancy        OccupancyStatus
+  householdSize    Int
+  status           HouseholdStatus @default(PENDING_REVIEW)
+  nextOfKinName    String
+  nextOfKinPhone   String
+  nextOfKinEmail   String?
+  verifiedById     String?         @db.Uuid
+  verifiedAt       DateTime?       @db.Timestamptz(6)
+  createdAt        DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(6)
+
+  estate         Estate           @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  location       EstateLocation   @relation(fields: [estateId, locationId], references: [estateId, id], onDelete: Restrict)
+  representative EstateMembership @relation(fields: [estateId, representativeId], references: [estateId, id], onDelete: Restrict)
+  campaignsAsBeneficiary Campaign[] @relation("CampaignBeneficiary")
+  electionCandidates    ElectionCandidate[]
+
+  @@index([estateId, locationId, status])
+}
+
+model RegistrationRequest {
+  id             String             @id @default(uuid()) @db.Uuid
+  estateId       String             @db.Uuid
+  locationId     String?            @db.Uuid
+  tokenHash      String?            @unique
+  email          String?
+  phone          String
+  fullName       String
+  locationLabel  String
+  unitCode       String
+  occupancy      OccupancyStatus
+  householdSize  Int
+  nextOfKinName  String
+  nextOfKinPhone String
+  nextOfKinEmail String?
+  status         RegistrationStatus @default(PENDING)
+  reviewedById   String?            @db.Uuid
+  reviewedAt     DateTime?          @db.Timestamptz(6)
+  reviewNote     String?
+  expiresAt      DateTime?          @db.Timestamptz(6)
+  createdAt      DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @db.Timestamptz(6)
+
+  estate   Estate          @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  location EstateLocation? @relation(fields: [estateId, locationId], references: [estateId, id], onDelete: Restrict)
+
+  @@index([estateId, status, createdAt])
+  @@index([phone, status])
+  @@index([estateId, locationId, unitCode, status])
+}
+
+model RegistrationInvitation {
+  id          String    @id @default(uuid()) @db.Uuid
+  estateId    String    @db.Uuid
+  createdById String    @db.Uuid
+  tokenHash   String    @unique
+  expiresAt   DateTime  @db.Timestamptz(6)
+  usedAt      DateTime? @db.Timestamptz(6)
+  revokedAt   DateTime? @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  estate    Estate @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  createdBy User   @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([estateId, expiresAt, usedAt, revokedAt])
+}
+
+model PasswordChallenge {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @db.Uuid
+  tokenHash String           @unique
+  purpose   ChallengePurpose
+  expiresAt DateTime         @db.Timestamptz(6)
+  attempts  Int              @default(0)
+  usedAt    DateTime?        @db.Timestamptz(6)
+  createdAt DateTime         @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, purpose, expiresAt])
+}
+
+model AuthSession {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid
+  estateId      String?   @db.Uuid
+  membershipId  String?   @db.Uuid
+  tokenHash     String    @unique
+  csrfTokenHash String
+  expiresAt     DateTime  @db.Timestamptz(6)
+  revokedAt     DateTime? @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+  estate     Estate?           @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  membership EstateMembership? @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+
+  @@index([userId, expiresAt])
+  @@index([membershipId, expiresAt])
+  @@index([estateId, expiresAt])
+}
+
+model AuditEvent {
+  id          String     @id @default(uuid()) @db.Uuid
+  scope       AuditScope
+  estateId    String?    @db.Uuid
+  actorUserId String?    @db.Uuid
+  action      String
+  entityType  String
+  entityId    String?    @db.Uuid
+  requestId   String?
+  metadata    Json       @default("{}")
+  createdAt   DateTime   @default(now()) @db.Timestamptz(6)
+
+  estate    Estate? @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  actorUser User?   @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([estateId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+}
+
+model PlatformSetting {
+  id              String   @id @default("default") @db.VarChar(32)
+  platformName    String   @default("Estate Market Place")
+  supportEmail    String   @default("")
+  maintenanceMode Boolean  @default(false)
+  updatedByUserId String?  @db.Uuid
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+}
+
+model SupportCase {
+  id              String            @id @default(uuid()) @db.Uuid
+  estateId        String?           @db.Uuid
+  requesterUserId String?           @db.Uuid
+  requesterName   String
+  requesterEmail  String?
+  subject         String
+  description     String
+  priority        SupportPriority   @default(NORMAL)
+  status          SupportCaseStatus @default(OPEN)
+  createdAt       DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @db.Timestamptz(6)
+
+  estate    Estate?           @relation(fields: [estateId], references: [id], onDelete: SetNull)
+  requester User?             @relation("SupportRequester", fields: [requesterUserId], references: [id], onDelete: SetNull)
+  comments  SupportComment[]
+
+  @@index([status, updatedAt])
+  @@index([estateId, createdAt])
+  @@index([requesterUserId, createdAt])
+}
+
+model SupportComment {
+  id          String   @id @default(uuid()) @db.Uuid
+  supportCaseId String @db.Uuid
+  authorUserId String? @db.Uuid
+  authorName  String
+  message     String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  supportCase SupportCase @relation(fields: [supportCaseId], references: [id], onDelete: Cascade)
+  author      User?       @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([supportCaseId, createdAt])
+}
+
+model Campaign {
+  id                      String                  @id @default(uuid()) @db.Uuid
+  estateId                String                  @db.Uuid
+  createdByUserId         String                  @db.Uuid
+  title                   String
+  description             String                  @db.Text
+  targetAmount            Int
+  beneficiaryType         CampaignBeneficiaryType
+  beneficiaryLabel        String
+  beneficiaryHouseholdId  String?                 @db.Uuid
+  householdContribution   Int?
+  deadline                DateTime                @db.Date
+  status                  CampaignStatus         @default(DRAFT)
+  createdAt               DateTime                @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime                @updatedAt @db.Timestamptz(6)
+
+  estate              Estate     @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  beneficiaryHousehold Household? @relation("CampaignBeneficiary", fields: [beneficiaryHouseholdId], references: [id], onDelete: Restrict)
+  votes               CampaignVote[]
+
+  @@index([estateId, status, updatedAt])
+  @@index([beneficiaryHouseholdId])
+}
+
+model CampaignVote {
+  id                String            @id @default(uuid()) @db.Uuid
+  campaignId        String            @db.Uuid
+  voterMembershipId String            @db.Uuid
+  decision          CommitteeDecision
+  reason            String?           @db.Text
+  createdAt         DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime          @updatedAt @db.Timestamptz(6)
+
+  campaign Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  voter    EstateMembership @relation(fields: [voterMembershipId], references: [id], onDelete: Restrict)
+
+  @@unique([campaignId, voterMembershipId])
+  @@index([campaignId, decision])
+}
+
+model Election {
+  id                 String        @id @default(uuid()) @db.Uuid
+  estateId           String        @db.Uuid
+  createdByUserId    String        @db.Uuid
+  title              String
+  description        String        @db.Text
+  closesAt           DateTime      @db.Timestamptz(6)
+  status             ElectionStatus @default(OPEN)
+  winnerCandidateId  String?       @db.Uuid
+  createdAt          DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime      @updatedAt @db.Timestamptz(6)
+
+  estate     Estate              @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  candidates ElectionCandidate[]
+  votes      ElectionVote[]
+
+  @@index([estateId, status, closesAt])
+}
+
+model ElectionCandidate {
+  id          String   @id @default(uuid()) @db.Uuid
+  electionId  String   @db.Uuid
+  householdId String   @db.Uuid
+  name        String
+  household   String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  election Election   @relation(fields: [electionId], references: [id], onDelete: Cascade)
+  home     Household @relation(fields: [householdId], references: [id], onDelete: Restrict)
+  votes    ElectionVote[]
+
+  @@unique([electionId, householdId])
+  @@index([electionId])
+}
+
+model ElectionVote {
+  id                String   @id @default(uuid()) @db.Uuid
+  electionId        String   @db.Uuid
+  candidateId       String   @db.Uuid
+  voterMembershipId String   @db.Uuid
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+
+  election Election          @relation(fields: [electionId], references: [id], onDelete: Cascade)
+  candidate ElectionCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  voter    EstateMembership @relation(fields: [voterMembershipId], references: [id], onDelete: Restrict)
+
+  @@unique([electionId, voterMembershipId])
+  @@index([candidateId])
+}
+
+model MarketplaceListing {
+  id               String       @id @default(uuid()) @db.Uuid
+  estateId         String       @db.Uuid
+  sellerMembershipId String     @db.Uuid
+  title            String
+  description      String       @db.Text
+  category         String
+  price            Int
+  quantity         Int          @default(1)
+  condition        String
+  paymentOptions   String[]
+  paymentDetails   Json         @default("{}")
+  images           Json         @default("[]")
+  status           ListingStatus @default(PENDING_REVIEW)
+  reviewedById     String?      @db.Uuid
+  reviewedAt       DateTime?    @db.Timestamptz(6)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime     @updatedAt @db.Timestamptz(6)
+
+  estate Estate @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  seller  EstateMembership @relation(fields: [sellerMembershipId], references: [id], onDelete: Restrict)
+
+  @@index([estateId, status, createdAt])
+  @@index([sellerMembershipId, createdAt])
+}
+
+model EstateNotice {
+  id             String   @id @default(uuid()) @db.Uuid
+  estateId       String   @db.Uuid
+  createdByUserId String  @db.Uuid
+  title          String
+  text           String   @db.Text
+  category       String
+  displayDate    String
+  displayTime    String
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  estate Estate @relation(fields: [estateId], references: [id], onDelete: Restrict)
+
+  @@index([estateId, createdAt])
+}
+
+model IssueReport {
+  id                String            @id @default(uuid()) @db.Uuid
+  estateId          String            @db.Uuid
+  reporterMembershipId String         @db.Uuid
+  title             String
+  description       String            @db.Text
+  category          String
+  location          String
+  status            IssueReportStatus @default(RECEIVED)
+  createdAt         DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime          @updatedAt @db.Timestamptz(6)
+
+  estate   Estate           @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  reporter EstateMembership @relation(fields: [reporterMembershipId], references: [id], onDelete: Restrict)
+  updates  IssueReportUpdate[]
+
+  @@index([estateId, status, updatedAt])
+  @@index([reporterMembershipId, createdAt])
+}
+
+model IssueReportUpdate {
+  id           String            @id @default(uuid()) @db.Uuid
+  reportId     String            @db.Uuid
+  authorUserId String            @db.Uuid
+  status       IssueReportStatus
+  message      String            @db.Text
+  createdAt    DateTime          @default(now()) @db.Timestamptz(6)
+
+  report IssueReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+}

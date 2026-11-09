@@ -12,6 +12,7 @@ export const navigationByRole = {
     { id: 'home', label: 'Overview', icon: FiHome },
     { id: 'marketplace', label: 'Marketplace', icon: FiShoppingBag },
     { id: 'fundraisers', label: 'Giving', icon: FiCreditCard },
+    { id: 'elections', label: 'Committee election', icon: FiUserCheck },
     { id: 'notices', label: 'Notices', icon: FiBell },
     { id: 'issues', label: 'Issue reports', icon: FiTool },
   ],
@@ -28,6 +29,7 @@ export const navigationByRole = {
     { id: 'home', label: 'Overview', icon: FiHome },
     { id: 'votes', label: 'Campaign votes', icon: FiHeart },
     { id: 'history', label: 'Decision history', icon: FiActivity },
+    { id: 'elections', label: 'Committee election', icon: FiUserCheck },
     { id: 'resident-space', label: 'Resident space', icon: FiHome },
     { id: 'notices', label: 'Notices', icon: FiBell },
   ],
@@ -44,9 +46,9 @@ export const navigationByRole = {
 export const pageHeadings = {
   home: {
     resident: ['WEDNESDAY, 4 NOVEMBER 2026', 'Good morning, Amara', 'Here’s what’s happening around Pavilion Court.'],
-    admin: ['ESTATE OPERATIONS', 'Good morning, Amara', 'Here are the items that need your attention.'],
+    admin: ['ESTATE OPERATIONS', 'Estate overview', 'Review household registrations and estate directory activity.'],
     committee: ['COMMUNITY OVERSIGHT', 'Committee overview', 'Review campaign decisions and community activity.'],
-    'super-admin': ['PLATFORM OPERATIONS', 'Platform overview', 'Monitor platform health, estate access, and technical support.'],
+    'super-admin': ['PLATFORM OPERATIONS', 'Platform overview', 'Monitor estate workspaces, platform accounts, registrations, and activity.'],
   },
   marketplace: ['BUY, SELL & SHARE', 'Marketplace', 'Find items and services shared by your neighbours.'],
   'marketplace-review': ['MARKETPLACE MODERATION', 'Marketplace review', 'Review resident listings before they appear in the marketplace.'],
@@ -59,12 +61,12 @@ export const pageHeadings = {
   notices: ['ESTATE UPDATES', 'Notices', 'Useful updates for life around Pavilion Court.'],
   issues: ['ESTATE SUPPORT', 'Issue reports', 'Report a concern and follow its progress with the estate team.'],
   campaigns: ['CAMPAIGN MANAGEMENT', 'Fundraising campaigns', 'Prepare community appeals and follow committee review.'],
-  residents: ['RESIDENT DIRECTORY', 'Residents', 'Manage verified Pavilion Court residents.'],
-  'resident-approvals': ['RESIDENT VERIFICATION', 'Resident approvals', 'Review requests against the Pavilion Court resident list.'],
-  'resident-new': ['RESIDENT DIRECTORY', 'Add resident', 'Add a verified resident to the Pavilion Court directory.'],
+  residents: ['RESIDENT DIRECTORY', 'Residents', 'Manage verified households in this estate.'],
+  'resident-approvals': ['RESIDENT VERIFICATION', 'Resident approvals', 'Review household registration requests for this estate.'],
+  'resident-new': ['RESIDENT DIRECTORY', 'Add resident', 'Add a verified household to the estate directory.'],
   locations: ['ESTATE ADDRESSES', 'Blocks and streets', 'Manage the address options used by each household.'],
-  'location-new': ['ESTATE ADDRESSES', 'Add a block or street', 'Add an address option to the Pavilion Court directory.'],
-  'notice-new': ['ESTATE COMMUNICATION', 'Create a notice', 'Write an update for Pavilion Court residents.'],
+  'location-new': ['ESTATE ADDRESSES', 'Add a block or street', 'Add an address option to the estate directory.'],
+  'notice-new': ['ESTATE COMMUNICATION', 'Create a notice', 'Write an update for estate residents.'],
   'notice-edit': ['ESTATE COMMUNICATION', 'Edit notice', 'Update the notice shown to residents.'],
   'campaign-detail': ['CAMPAIGN MANAGEMENT', 'Campaign details', 'Review the campaign plan and committee activity.'],
   'campaign-progress': ['CAMPAIGN MANAGEMENT', 'Campaign progress', 'Review fundraising progress for an approved campaign.'],
@@ -89,6 +91,7 @@ export const pageHeadings = {
   'platform-account-new': ['PLATFORM ACCOUNTS', 'Add user', 'Create an account and assign its platform role.'],
   'platform-account-edit': ['PLATFORM ACCOUNTS', 'Edit user', 'Update account details and workspace role.'],
   'platform-support-detail': ['TECHNICAL SUPPORT', 'Support case details', 'Review the request and follow up with comments.'],
+  'support-new': ['SUPPORT', 'Contact platform support', 'Send a request to the platform support team.'],
 }
 
 export function headingFor(role, page) {

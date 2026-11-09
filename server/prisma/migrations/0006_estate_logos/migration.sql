@@ -1,0 +1,1 @@
+ALTER TABLE "Estate" ADD COLUMN "logo" TEXT;

@@ -1,6 +1,6 @@
 # Estate Marketplace Backend Implementation Brief
 
-**Status:** Draft for backend planning  
+**Status:** Backend foundation in progress  
 **Product:** Estate Marketplace  
 **Pilot estate:** Pavilion Court, Membley Estate  
 **Audience:** Backend implementers and technical reviewers  
@@ -12,9 +12,9 @@ This document turns the project brief and current UI workflows into a backend st
 
 The frontend is a React/Vite preview. Most records and actions currently live in browser memory; logo and theme previews use browser storage. There is no production sign-in, shared database, file service, notification service, or payment integration yet. Backend APIs must become the source of truth before the UI reports a durable change, verified payment, or permission update.
 
-The project brief proposes Node.js with Express, PostgreSQL, Prisma or Sequelize, server-side role checks, object storage, Safaricom Daraja for M-Pesa, and a modular feature structure. PostgreSQL is the agreed database direction. Confirm the rest of the stack and deployment target with the project owner before setup.
+The confirmed backend stack is Node.js with Express, PostgreSQL, and Prisma. Server-side role checks and a modular feature structure are required. Hosting, object storage, and notification providers remain to be selected.
 
-The pilot is Pavilion Court, while the data model should carry `estate_id` from the start to avoid a later tenant migration. Keep platform-wide Super Admin functions separate from estate operations.
+The pilot is Pavilion Court, while the data model should carry `estate_id` from the start to avoid a later tenant migration. The pilot uses one platform Super Admin account; there is no separate Estate Admin account. The Super Admin selects an estate before using estate operations.
 
 ## 2. Roles and authorization
 
@@ -23,12 +23,12 @@ Enforce permissions in the API and database access layer. Frontend route hiding 
 | Actor | Backend scope |
 |---|---|
 | Resident | Use resident capabilities after estate approval: browse, buy, list items, request or make contributions, view notices, vote where eligible, and report issues. |
-| Estate Admin | Resident capabilities plus household verification, resident/account support, block/street management, listing moderation, notices, issue status reports, campaign administration, and election setup. |
+| Estate Admin | Not used for the single-admin pilot. Estate operations are authorized to the Super Admin in a selected estate context. |
 | Committee Member | Resident capabilities plus campaign and fund-release oversight and voting. Admin and committee are separate estate roles; one user must not hold both in the same estate under the project brief. |
-| Super Admin | Platform-level user and estate lifecycle management, access suspension for payment, support ticket review/comments, platform configuration, and audit visibility. No estate campaign, resident approval, issue, or notice decisions. |
+| Super Admin | Platform-level user and estate lifecycle management, access suspension for payment, support ticket review/comments, platform configuration, and audit visibility. For the pilot, also performs estate operations after selecting the target estate. |
 | Account Holder | Proposed finance role for performing approved fund transfers and attaching evidence. This role and its permissions are not yet confirmed. |
 
-Model a person's estate membership separately from their platform account. A resident who is also an Estate Admin or Committee Member retains resident capabilities; an elevated role adds permissions. Committee membership is granted through an approved election workflow, not by arbitrary client input. Super Admin can create users and assign Estate Admin access as requested, but cannot bypass the Committee election rule to appoint committee members.
+Model a person's estate membership separately from their platform account. Committee membership is granted through an approved election workflow, not by arbitrary client input. The bootstrap creates only a platform Super Admin, with no estate membership. Estate Admin membership values are retained for existing data compatibility but do not authorize pilot admin routes.
 
 For every request, derive the actor from the authenticated session. Confirm the actor's active estate membership, role, estate access status, and resource estate before reading or mutating data. Reject cross-estate IDs even when they are valid UUIDs.
 
@@ -71,7 +71,7 @@ Use JSON, consistent validation/error envelopes, pagination, and versioned route
 ### Authentication and household onboarding
 
 - `POST /auth/login`, `POST /auth/logout`, `POST /auth/refresh` (if refresh tokens are selected), `POST /auth/password/complete-setup`, `POST /auth/password/forgot`, `POST /auth/password/reset`.
-- `POST /estates/:estateId/registration-invitations` (Estate Admin), `GET /register/:token` (public, read-only invite validation), `POST /register/:token` (public, rate-limited submission).
+- `POST /estates/:estateId/registration-invitations` (Super Admin in selected estate), `GET /register/:token` (public, read-only invite validation), `POST /register/:token` (public, rate-limited submission).
 - `GET /admin/registration-requests`, `POST /admin/registration-requests/:id/approve`, `POST /admin/registration-requests/:id/decline`.
 - `GET /admin/households`, `POST /admin/households`, `GET /admin/households/:id`, `PATCH /admin/households/:id`, `DELETE /admin/households/:id` (prefer lifecycle removal and preserve finance history), `POST /admin/households/:id/password-reset`, and a separately audited next-of-kin promotion action.
 - Registration accepts one representative per household, household member count, unit/block or street, occupancy, and required next-of-kin details. Detect duplicate household registration on the server and return a useful conflict.
@@ -81,18 +81,18 @@ When an admin provisions a resident login, generate an expiring one-time credent
 ### Estate and platform administration
 
 - Super Admin: `GET/POST /platform/estates`, `GET/PATCH/DELETE /platform/estates/:id`, `POST /platform/estates/:id/suspend`, `POST /platform/estates/:id/restore`; equivalent `/platform/users` CRUD and access revoke/restore endpoints.
-- Estate Admin: `GET/POST /estate/locations`, `PATCH/DELETE /estate/locations/:id`. Block deletion while referenced; mark inactive instead.
+- Super Admin in selected estate: `GET/POST /estate/locations`, `PATCH/DELETE /estate/locations/:id`. Block deletion while referenced; mark inactive instead.
 - User/estate deletion should normally archive or deactivate, revoke sessions, and preserve financial/audit history. Suspension for nonpayment must block estate-member access while preserving records and Super Admin support/audit access.
 - `GET /platform/support-tickets`, `GET /platform/support-tickets/:id`, `PATCH /platform/support-tickets/:id`, `POST /platform/support-tickets/:id/comments`.
 - `GET /platform/audit-events` (read-only, filterable, paginated).
 
 ### Estate operations and community workflows
 
-- Marketplace: `GET/POST /estate/listings`, `GET/PATCH/DELETE /estate/listings/:id`, `POST /estate/listings/:id/submit`, Estate Admin `POST .../:id/approve` or `/reject`, and resident `POST /estate/listings/:id/flags`.
+- Marketplace: `GET/POST /estate/listings`, `GET/PATCH/DELETE /estate/listings/:id`, `POST /estate/listings/:id/submit`, Super Admin `POST .../:id/approve` or `/reject`, and resident `POST /estate/listings/:id/flags`.
 - Orders: `POST /estate/orders`, `GET /estate/orders`, `GET /estate/orders/:id`, and explicit payment initiation/reconciliation routes. Snapshot price and seller payment instructions at order creation so later listing edits do not alter an existing order.
 - Notices: `GET /estate/notices`, `POST /estate/notices`, `GET /estate/notices/:id`, `PATCH /estate/notices/:id`, and `DELETE /estate/notices/:id` (soft delete/unpublish, audited). Publish notices only to the estate they belong to.
-- Issues: `GET/POST /estate/issues`, `GET /estate/issues/:id`, `POST /estate/issues/:id/updates` (Estate Admin), and `POST /estate/issues/:id/comments` only if resident comments are later approved. Status and resident update should commit atomically.
-- Elections: Estate Admin `POST /estate/elections`; residents `GET /estate/elections`, `POST /estate/elections/:id/votes`; Admin closes election and records winner. Enforce one eligible vote per household/user and write the Committee role grant in the same transaction as election finalization.
+- Issues: `GET/POST /estate/issues`, `GET /estate/issues/:id`, `POST /estate/issues/:id/updates` (Super Admin in selected estate), and `POST /estate/issues/:id/comments` only if resident comments are later approved. Status and resident update should commit atomically.
+- Elections: Super Admin in selected estate `POST /estate/elections`; residents `GET /estate/elections`, `POST /estate/elections/:id/votes`; Super Admin closes election and records winner. Enforce one eligible vote per household/user and write the Committee role grant in the same transaction as election finalization.
 - Campaigns: `GET/POST /estate/campaigns`, `GET/PATCH /estate/campaigns/:id`, submit/resubmit endpoints, committee vote endpoint, progress update endpoint, and resident contribution history.
 - Assessments and contributions: show assigned amount, confirmed paid amount, and balance; accept partial amounts. Prompt a registered phone or a resident-supplied phone and store the selected number and amount as an initiation request.
 - Fund releases: separate requests, votes, and transfer confirmation/proof endpoints once the Account Holder role and release rules are agreed.
@@ -187,7 +187,7 @@ Keep route handlers thin: parse/validate input, authenticate and authorize, call
 
 ### Phase 1 — Accounts and estate operations
 
-- Estate/user CRUD, Estate Admin assignment, block/street/unit records, household self-registration, approval/decline, one-time login setup/reset, notices CRUD, issues with required progress reports, and support ticket comments.
+- Estate/user CRUD, block/street/unit records, household self-registration, approval/decline, one-time login setup/reset, notices CRUD, issues with required progress reports, and support ticket comments under the single Super Admin model.
 - Connect React pages to APIs; remove browser-only authority for these records.
 
 ### Phase 2 — Marketplace
@@ -207,8 +207,8 @@ Keep route handlers thin: parse/validate input, authenticate and authorize, call
 - An unverified account cannot use resident services; estate membership and estate suspension are checked on every protected request.
 - One active or pending representative is permitted per estate household/unit; Admin decisions are authorized and audited.
 - Admin-created resident credentials are one-time, expiring, never returned in plaintext, and require password setup at first login.
-- Super Admin can manage platform estates and users, suspend/restore estate access, and read/comment on support tickets without receiving estate governance powers.
-- Estate Admin can create/edit/delete notices; changes are scoped to the estate and deletion retains audit/history.
+- Super Admin can manage platform estates and users, suspend/restore estate access, read/comment on support tickets, and perform estate governance operations in a selected estate.
+- Super Admin can create/edit/delete notices; changes are scoped to the selected estate and deletion retains audit/history.
 - Every issue status change includes a resident-facing update in the same transaction.
 - Marketplace accepts M-Pesa and/or bank transfer only; required seller details validate, and residents see the chosen method's instructions. Orders are not paid until verified.
 - Listing image count is enforced as 3–6 by the API, and listing moderation controls resident visibility.
@@ -220,12 +220,12 @@ Keep route handlers thin: parse/validate input, authenticate and authorize, call
 
 Keep these questions open until the product owner resolves them; do not hard-code assumptions into payment or authorization policy:
 
-1. Marketplace fees/commission and whether escrow is ever required. - Escrow is required. 
+1. Marketplace fees/commission. Escrow is required; fee/commission policy remains open.
 2. Who legally holds estate/campaign money and whether the Account Holder role is adopted.
-3. Marketplace bank transfer: seller account direct, platform/estate account, proof upload, and who verifies payment.- They can upload the transcition ID/ Code.
+3. Marketplace bank transfer: seller account direct, platform/estate account, and who verifies payment. Buyer-submitted transfer transaction ID/code is the proof reference.
 4. M-Pesa product flow for marketplace purchases versus contribution prompts, including Daraja account and reference strategy.
-5. Campaign outcome below target: proceed, refund, or reallocate. - Proceed
-6. Resident verification source of truth and the Admin's review evidence. - Admin review
+5. Campaign outcome below target: proceed, refund, or reallocate. Confirmed: proceed.
+6. Resident verification source of truth and the Admin's review evidence. Confirmed: Admin review.
 7. Fund-release requester, voting conflict rules, release threshold details, and account-holder evidence/confirmation. - Release threshold details and account holder confirmation (may be transaction code)
 8. Committee size changes during an open vote, frozen threshold behavior, and minimum eligible voters.
 9. Estate subscription/payment grace period, suspension timing, restore process, and data handling after estate closure. -to be worked on future

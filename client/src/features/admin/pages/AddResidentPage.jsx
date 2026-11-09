@@ -8,6 +8,9 @@ export function AddResidentPage({ locations, existingHouseholds, onCancel, onCre
   const [values, setValues] = useState(emptyValues)
   const [errors, setErrors] = useState({})
   const [submitted, setSubmitted] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const [setupUrl, setSetupUrl] = useState('')
   const selectedLocation = locations.find((location) => location.id === values.locationId)
   const update = (key, value) => {
     setValues((current) => ({ ...current, [key]: value }))
@@ -28,29 +31,24 @@ export function AddResidentPage({ locations, existingHouseholds, onCancel, onCre
     setErrors(next)
     return Object.keys(next).length === 0
   }
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault()
     setSubmitted(true)
     if (!validate()) return
-    const suffix = crypto.randomUUID().slice(0, 8).toUpperCase()
-    onCreate({
-      id: `R-${suffix}`,
-      name: values.name.trim(),
-      email: values.email.trim().toLowerCase(),
-      phone: values.phone.trim(),
-      locationId: selectedLocation.id,
-      location: selectedLocation.name,
-      unitNumber: values.unitNumber.trim(),
-      unit: `${selectedLocation.name} · ${values.unitNumber.trim()}`,
-      occupancy: values.occupancy,
-      householdSize: Number(values.householdSize),
-      nextOfKin: { name: values.nextOfKinName.trim(), phone: values.nextOfKinPhone.trim(), email: values.nextOfKinEmail.trim() },
-      isHouseholdHolder: true,
-      accountStatus: 'OTP email pending',
-      mustResetPassword: true,
-      status: 'Verified',
-    })
+    setSaving(true)
+    setSubmitError('')
+    try {
+      const created = await onCreate({
+        fullName: values.name.trim(), email: values.email.trim().toLowerCase(), phone: values.phone.trim(),
+        locationId: selectedLocation.id, unitCode: values.unitNumber.trim(), occupancy: values.occupancy,
+        householdSize: Number(values.householdSize), nextOfKinName: values.nextOfKinName.trim(),
+        nextOfKinPhone: values.nextOfKinPhone.trim(), nextOfKinEmail: values.nextOfKinEmail.trim().toLowerCase(),
+      })
+      if (created?.setupUrl) setSetupUrl(created.setupUrl)
+    } catch (error) { setSubmitError(error.message || 'Could not add this household.') }
+    finally { setSaving(false) }
   }
+  if (setupUrl) return <section className="surface-card mx-auto grid max-w-2xl gap-4 p-5 sm:p-7"><div><p className="section-kicker">HOUSEHOLD ADDED</p><h2 className="mt-2 text-lg font-bold">Share the password setup link</h2><p className="mt-2 text-sm leading-6 text-muted">The resident account is active. Share this one-time link with {values.name.trim()} to set a password. The link expires in 48 hours.</p></div><input className="form-control" readOnly value={setupUrl} onFocus={(event) => event.target.select()} /><div className="flex flex-wrap gap-2"><button className="primary-button" type="button" onClick={() => navigator.clipboard?.writeText(setupUrl)}>Copy setup link</button><button className="secondary-button" type="button" onClick={onCancel}>Back to residents</button></div></section>
   return <section className="grid w-full gap-5 xl:grid-cols-[minmax(0,1fr)_300px]">
     <form noValidate onSubmit={submit} className="surface-card w-full p-4 sm:p-6">
       <div className="mb-5 border-b border-line pb-4 dark:border-night-line"><h2 className="text-base font-bold">Household registration</h2><p className="mt-1 text-sm text-muted">Register one representative for each household. Include the total number of people living in the home.</p></div>
@@ -69,8 +67,9 @@ export function AddResidentPage({ locations, existingHouseholds, onCancel, onCre
         {field('nextOfKinPhone', 'Phone number', '+254 7XX XXX XXX', { type: 'tel', required: true })}
         {field('nextOfKinEmail', 'Email address', 'name@example.com', { type: 'email', required: true })}
       </div>
-      <p className="mt-5 flex items-start gap-2 rounded-lg bg-blue-50 px-3 py-2.5 text-xs leading-5 text-blue-900 dark:bg-blue-950/50 dark:text-blue-200"><FiInfo className="mt-0.5 shrink-0" size={15} />Account setup is preview-only. The email service is not connected; when enabled, a one-time password will be sent to the registered email and the first sign-in will require a password reset.</p>
-      <div className="mt-6 flex flex-col-reverse gap-2 border-t border-line pt-4 dark:border-night-line sm:flex-row sm:justify-end"><button type="button" className="secondary-button" onClick={onCancel}><FiArrowLeft size={15} />Cancel</button><button type="submit" className="primary-button"><FiUserPlus size={15} />Register household</button></div>
+      <p className="mt-5 flex items-start gap-2 rounded-lg bg-blue-50 px-3 py-2.5 text-xs leading-5 text-blue-900 dark:bg-blue-950/50 dark:text-blue-200"><FiInfo className="mt-0.5 shrink-0" size={15} />The household is added as verified. Share the generated password setup link with the resident; email delivery is not connected yet.</p>
+      {submitError && <p role="alert" className="mt-3 text-sm text-red-700">{submitError}</p>}
+      <div className="mt-6 flex flex-col-reverse gap-2 border-t border-line pt-4 dark:border-night-line sm:flex-row sm:justify-end"><button type="button" className="secondary-button" onClick={onCancel}><FiArrowLeft size={15} />Cancel</button><button type="submit" disabled={saving} className="primary-button"><FiUserPlus size={15} />{saving ? 'Adding household…' : 'Register household'}</button></div>
     </form>
     <aside className="surface-card h-fit p-4 sm:p-5"><p className="section-kicker">HOUSEHOLD ACCESS</p><h2 className="mt-2 text-sm font-bold">One account per home</h2><p className="mt-2 text-xs leading-5 text-muted">Check the resident list and location before adding a representative. Only one account can be registered to a household unit.</p>{!locations.length && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">Add a block or street before registering a household.</p>}</aside>
   </section>
