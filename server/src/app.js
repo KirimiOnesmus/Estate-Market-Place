@@ -5,6 +5,7 @@ const cors = require('cors');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const path = require('node:path');
 
 const env = require('./config/env');
 const prisma = require('./db/prisma');
@@ -44,6 +45,15 @@ app.use('/api/v1', platformRoutes);
 app.use('/api/v1', communicationRoutes);
 app.use('/api/v1', givingRoutes);
 app.use('/api/v1', householdRoutes);
+
+if (env.NODE_ENV === 'production') {
+  const clientBuildPath = path.resolve(__dirname, '../../client/dist');
+  app.use(express.static(clientBuildPath, { maxAge: '1h', index: false }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    return res.sendFile(path.join(clientBuildPath, 'index.html'));
+  });
+}
 
 app.use(notFound);
 app.use(errorHandler);
