@@ -7,6 +7,7 @@ const { HttpError, asyncHandler, validate } = require('../../http/errors');
 const { clearSessionCookies, cookieOptions, requireAuth, requireCsrf, requireSuperAdmin, SESSION_COOKIE, CSRF_COOKIE } = require('../../middleware/auth');
 const { hashPassword, verifyPassword } = require('../../security/passwords');
 const { createToken, hashToken } = require('../../security/tokens');
+const { notifyEstate } = require('../communications/service');
 
 const router = Router();
 const sessionTtlMs = 8 * 60 * 60 * 1000;
@@ -120,6 +121,8 @@ router.post('/setup-password/:token', setupLimit, validate(setupPasswordSchema),
     await tx.user.update({ where: { id: challenge.userId }, data: { passwordHash, mustResetPassword: false } });
     await tx.authSession.updateMany({ where: { userId: challenge.userId, revokedAt: null }, data: { revokedAt: new Date() } });
   });
+  const memberships = await prisma.estateMembership.findMany({ where: { userId: challenge.userId, status: 'ACTIVE' }, select: { estateId: true } });
+  await Promise.all(memberships.map(({ estateId }) => notifyEstate(estateId, 'PASSWORD_UPDATED', { title: 'Password updated', message: 'Your account password was changed successfully.', linkPath: '/login', userIds: [challenge.userId], roles: ['RESIDENT', 'COMMITTEE_MEMBER', 'ESTATE_ADMIN'] }).catch((error) => console.error('Could not queue password notification:', error.message))));
   res.json({ data: { passwordSet: true }, requestId: req.id });
 }));
 

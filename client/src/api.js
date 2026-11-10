@@ -56,6 +56,10 @@ export const api = {
   createPlatformEstate: (values) => request('/platform/estates', { method: 'POST', data: values }),
   updatePlatformEstate: (id, values) => request(`/platform/estates/${encodeURIComponent(id)}`, { method: 'PUT', data: values }),
   updatePlatformEstateAccess: (id, accessStatus) => request(`/platform/estates/${encodeURIComponent(id)}/access`, { method: 'PATCH', data: { accessStatus } }),
+  getEstateCommunications: (id) => request(`/platform/estates/${encodeURIComponent(id)}/communications`),
+  updateEstateCommunications: (id, values) => request(`/platform/estates/${encodeURIComponent(id)}/communications`, { method: 'PUT', data: values }),
+  getEstateNotification: (id) => request(`/notifications/${encodeURIComponent(id)}`),
+  listEstateNotifications: () => request('/notifications'),
   login: async (values) => {
     const data = await request('/auth/login', { method: 'POST', data: values })
     csrfToken = data.csrfToken || ''
@@ -108,6 +112,15 @@ export const api = {
   listMarketplaceListings: (admin = false) => request(admin ? '/admin/marketplace/listings' : '/marketplace/listings'),
   createMarketplaceListing: (values) => request('/marketplace/listings', { method: 'POST', data: values }),
   reviewMarketplaceListing: (id, status) => request(`/admin/marketplace/listings/${encodeURIComponent(id)}`, { method: 'PATCH', data: { status } }),
+  listMarketplaceBids: (id) => request(`/marketplace/listings/${encodeURIComponent(id)}/bids`),
+  createMarketplaceBid: (id, values) => request(`/marketplace/listings/${encodeURIComponent(id)}/bids`, { method: 'POST', data: values }),
+  respondToMarketplaceBid: (listingId, bidId, decision) => request(`/marketplace/listings/${encodeURIComponent(listingId)}/bids/${encodeURIComponent(bidId)}`, { method: 'PATCH', data: { decision } }),
+  createMarketplaceOrder: (listingId, values) => request(`/marketplace/listings/${encodeURIComponent(listingId)}/orders`, { method: 'POST', data: values }),
+  getMarketplaceOrder: (orderId) => request(`/marketplace/orders/${encodeURIComponent(orderId)}`),
+  listMyMarketplaceOrders: () => request('/marketplace/orders/me'),
+  confirmMarketplaceOrderReceived: (orderId) => request(`/marketplace/orders/${encodeURIComponent(orderId)}/received`, { method: 'POST', data: {} }),
+  listAdminMarketplaceOrders: async () => { const response = await http.get('/admin/marketplace/orders'); return { orders: response.data?.data || [], mpesaB2cPayoutAvailable: Boolean(response.data?.meta?.mpesaB2cPayoutAvailable) } },
+  releaseMarketplaceOrder: (orderId, payoutReference) => request(`/admin/marketplace/orders/${encodeURIComponent(orderId)}/release`, { method: 'POST', data: { payoutReference } }),
   listNotices: (admin = false) => request(admin ? '/admin/notices' : '/notices'),
   createNotice: (values) => request('/admin/notices', { method: 'POST', data: values }),
   updateNotice: (id, values) => request(`/admin/notices/${encodeURIComponent(id)}`, { method: 'PUT', data: values }),

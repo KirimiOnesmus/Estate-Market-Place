@@ -151,8 +151,12 @@ model Estate {
   campaigns     Campaign[]
   elections     Election[]
   listings      MarketplaceListing[]
+  marketplaceOrders MarketplaceOrder[]
   notices       EstateNotice[]
   issueReports  IssueReport[]
+  communicationSetting    EstateCommunicationSetting?
+  notifications            EstateNotification[]
+  communicationDeliveries CommunicationDelivery[]
 
   @@index([accessStatus])
 }
@@ -178,6 +182,7 @@ model User {
   auditEvents        AuditEvent[]
   supportRequests    SupportCase[]   @relation("SupportRequester")
   supportComments    SupportComment[]
+  notifications      EstateNotification[]
 
   @@index([status])
 }
@@ -219,6 +224,9 @@ model EstateMembership {
   campaignVotes CampaignVote[]
   electionVotes ElectionVote[]
   listings      MarketplaceListing[]
+  marketplacePurchases MarketplaceOrder[] @relation("MarketplaceBuyer")
+  marketplaceSales MarketplaceOrder[] @relation("MarketplaceSeller")
+  marketplaceBids MarketplaceBid[]
   issueReports  IssueReport[]
   campaignPayments CampaignPayment[]
 
@@ -363,6 +371,69 @@ model PlatformSetting {
   maintenanceMode Boolean  @default(false)
   updatedByUserId String?  @db.Uuid
   updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+}
+
+model EstateCommunicationSetting {
+  id                           String   @id @default(uuid()) @db.Uuid
+  estateId                     String   @unique @db.Uuid
+  emailEnabled                 Boolean  @default(false)
+  smtpHost                     String   @default("")
+  smtpPort                     Int      @default(587)
+  smtpSecure                   Boolean  @default(false)
+  smtpUsername                 String   @default("")
+  smtpPasswordEncrypted        String?  @db.Text
+  emailFromName                String   @default("")
+  emailFromAddress             String   @default("")
+  whatsappEnabled              Boolean  @default(false)
+  whatsappPhoneNumberId        String   @default("")
+  whatsappAccessTokenEncrypted String?  @db.Text
+  whatsappApiVersion           String   @default("v25.0")
+  whatsappLanguage             String   @default("en")
+  eventSettings                Json     @default("{}")
+  updatedAt                    DateTime @updatedAt @db.Timestamptz(6)
+  estate                       Estate   @relation(fields: [estateId], references: [id], onDelete: Cascade)
+}
+
+model EstateNotification {
+  id         String   @id @default(uuid()) @db.Uuid
+  estateId   String   @db.Uuid
+  userId     String   @db.Uuid
+  event      String
+  title      String
+  message    String   @db.Text
+  linkPath   String   @default("/")
+  readAt     DateTime? @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  estate     Estate   @relation(fields: [estateId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries CommunicationDelivery[]
+  @@index([userId, createdAt])
+  @@index([estateId, createdAt])
+}
+
+model CommunicationDelivery {
+  id                String   @id @default(uuid()) @db.Uuid
+  estateId          String   @db.Uuid
+  notificationId    String?  @db.Uuid
+  channel           String
+  recipient         String
+  subject            String   @default("")
+  body               String   @db.Text
+  templateName       String   @default("")
+  templateLanguage   String   @default("en")
+  templateParams     Json     @default("[]")
+  status             String   @default("PENDING")
+  attempts           Int      @default(0)
+  lastError          String?  @db.Text
+  providerMessageId  String?
+  nextAttemptAt      DateTime @default(now()) @db.Timestamptz(6)
+  sentAt             DateTime? @db.Timestamptz(6)
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(6)
+  estate             Estate   @relation(fields: [estateId], references: [id], onDelete: Cascade)
+  notification       EstateNotification? @relation(fields: [notificationId], references: [id], onDelete: SetNull)
+  @@index([status, nextAttemptAt])
+  @@index([estateId, createdAt])
 }
 
 model SupportCase {
@@ -524,9 +595,9 @@ model MarketplaceListing {
   category         String
   price            Int
   quantity         Int          @default(1)
+  reservedQuantity Int          @default(0)
   condition        String
-  paymentOptions   String[]
-  paymentDetails   Json         @default("{}")
+  sellerMpesaPhone String?
   images           Json         @default("[]")
   status           ListingStatus @default(PENDING_REVIEW)
   reviewedById     String?      @db.Uuid
@@ -536,8 +607,64 @@ model MarketplaceListing {
 
   estate Estate @relation(fields: [estateId], references: [id], onDelete: Restrict)
   seller  EstateMembership @relation(fields: [sellerMembershipId], references: [id], onDelete: Restrict)
+  bids    MarketplaceBid[]
+  orders  MarketplaceOrder[]
 
   @@index([estateId, status, createdAt])
+  @@index([sellerMembershipId, createdAt])
+}
+
+model MarketplaceBid {
+  id                 String   @id @default(uuid()) @db.Uuid
+  listingId          String   @db.Uuid
+  bidderMembershipId String   @db.Uuid
+  amount             Int
+  message            String   @default("") @db.Text
+  status             String   @default("PENDING")
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(6)
+  respondedAt        DateTime? @db.Timestamptz(6)
+  listing            MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  bidder             EstateMembership @relation(fields: [bidderMembershipId], references: [id], onDelete: Restrict)
+  orders             MarketplaceOrder[]
+  @@index([listingId, status, createdAt])
+  @@index([bidderMembershipId, createdAt])
+}
+
+model MarketplaceOrder {
+  id                  String   @id @default(uuid()) @db.Uuid
+  reference           String   @unique
+  estateId            String   @db.Uuid
+  listingId           String   @db.Uuid
+  buyerMembershipId   String   @db.Uuid
+  sellerMembershipId  String   @db.Uuid
+  bidId               String?  @db.Uuid
+  quantity            Int
+  unitPrice           Int
+  totalAmount         Int
+  phone               String
+  sellerMpesaPhone    String?
+  status              String   @default("PAYMENT_PENDING")
+  merchantRequestId   String?
+  checkoutRequestId   String?  @unique
+  mpesaReceiptNumber  String?  @unique
+  resultCode          Int?
+  resultDescription   String?  @db.Text
+  payoutReference     String?
+  originatorConversationId String? @unique
+  payoutConversationId String?
+  releasedByUserId    String?  @db.Uuid
+  createdAt           DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(6)
+  heldAt              DateTime? @db.Timestamptz(6)
+  releasedAt          DateTime? @db.Timestamptz(6)
+  estate              Estate @relation(fields: [estateId], references: [id], onDelete: Restrict)
+  listing             MarketplaceListing @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  buyer               EstateMembership @relation("MarketplaceBuyer", fields: [buyerMembershipId], references: [id], onDelete: Restrict)
+  seller              EstateMembership @relation("MarketplaceSeller", fields: [sellerMembershipId], references: [id], onDelete: Restrict)
+  bid                 MarketplaceBid? @relation(fields: [bidId], references: [id], onDelete: SetNull)
+  @@index([estateId, status, createdAt])
+  @@index([buyerMembershipId, createdAt])
   @@index([sellerMembershipId, createdAt])
 }
 

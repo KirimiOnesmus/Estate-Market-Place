@@ -1,3 +1,5 @@
+const { randomBytes } = require('node:crypto');
+
 const darajaBaseUrl = process.env.MPESA_ENV === 'production'
   ? 'https://api.safaricom.co.ke'
   : 'https://sandbox.safaricom.co.ke';
@@ -31,6 +33,58 @@ function isDarajaConfigured() {
   return Object.values(config).every(Boolean)
     && ['CustomerPayBillOnline', 'CustomerBuyGoodsOnline'].includes(config.transactionType)
     && /^https:\/\//i.test(config.callbackUrl);
+}
+
+function b2cConfig() {
+  return {
+    shortcode: process.env.MPESA_B2C_SHORTCODE?.trim(),
+    initiatorName: process.env.MPESA_B2C_INITIATOR_NAME?.trim(),
+    securityCredential: process.env.MPESA_B2C_SECURITY_CREDENTIAL?.trim(),
+    callbackUrl: process.env.MPESA_B2C_CALLBACK_URL?.trim(),
+    callbackSecret: process.env.MPESA_CALLBACK_SECRET?.trim(),
+  };
+}
+
+function isB2CPayoutConfigured() {
+  const config = b2cConfig();
+  const credentials = darajaConfig();
+  return Object.values(config).every(Boolean) && Boolean(credentials.consumerKey && credentials.consumerSecret) && /^https:\/\//i.test(config.callbackUrl);
+}
+
+async function initiateB2CPayout({ phone, amount, reference }) {
+  const config = b2cConfig();
+  if (!isB2CPayoutConfigured()) throw new DarajaError('Safaricom B2C payouts are not configured.', 503, true);
+  const token = await getAccessToken();
+  const base = config.callbackUrl.replace(/\/+$/, '');
+  const originatorConversationId = `${reference}-${randomBytes(5).toString('hex')}`;
+  let response;
+  try {
+    response = await fetch(`${darajaBaseUrl}/mpesa/b2c/v3/paymentrequest`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        OriginatorConversationID: originatorConversationId,
+        InitiatorName: config.initiatorName,
+        SecurityCredential: config.securityCredential,
+        CommandID: 'BusinessPayment',
+        Amount: amount,
+        PartyA: config.shortcode,
+        PartyB: phone,
+        Remarks: `Marketplace payout ${reference}`.slice(0, 100),
+        QueueTimeOutURL: `${base}/timeout/${encodeURIComponent(config.callbackSecret)}`,
+        ResultURL: `${base}/result/${encodeURIComponent(config.callbackSecret)}`,
+        Occassion: reference.slice(0, 20),
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw new DarajaError('Safaricom did not confirm the payout request. Check its status before retrying.');
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ConversationID || !payload.OriginatorConversationID) {
+    throw new DarajaError(payload.errorMessage || payload.ResponseDescription || 'Safaricom could not accept this payout.', 502, true);
+  }
+  return { conversationId: payload.ConversationID, originatorConversationId: payload.OriginatorConversationID };
 }
 
 function callbackUrl() {
@@ -106,4 +160,4 @@ async function initiateStkPush({ phone, amount, reference, description }) {
   };
 }
 
-module.exports = { DarajaError, callbackUrl, darajaConfig, initiateStkPush, isDarajaConfigured };
+module.exports = { DarajaError, b2cConfig, callbackUrl, darajaConfig, initiateB2CPayout, initiateStkPush, isB2CPayoutConfigured, isDarajaConfigured };

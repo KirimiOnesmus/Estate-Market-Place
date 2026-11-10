@@ -5,6 +5,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
   CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
   DATABASE_URL: z.string().url().startsWith('postgresql://').or(z.string().url().startsWith('postgres://')),
+  COMMUNICATIONS_ENCRYPTION_KEY: z.string().optional().default(''),
 });
 
 const result = envSchema.safeParse(process.env);

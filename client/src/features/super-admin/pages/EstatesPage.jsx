@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { FiArchive, FiEdit2, FiExternalLink, FiMapPin, FiPlus, FiRotateCcw, FiUsers, FiUserX } from 'react-icons/fi'
 import { DialogFrame } from '../../../shared/components/DialogFrame.jsx'
 
-export function PlatformEstatesPage({ estates, loading, loadError, onRetry, onAdd, onEdit, onSetAccess, onSelectEstate }) {
+export function PlatformEstatesPage({ estates, loading, loadError, onRetry, onAdd, onEdit, onSetAccess, onSelectEstate, onCommunications }) {
   const [decision, setDecision] = useState(null)
   const [saving, setSaving] = useState(false)
   const [actionError, setActionError] = useState('')
@@ -32,6 +32,7 @@ export function PlatformEstatesPage({ estates, loading, loadError, onRetry, onAd
       <div className="grid gap-4 p-5 sm:grid-cols-3 sm:p-6"><Detail label="Estate administrator">{estate.administrator?.fullName || 'Not assigned'}{estate.administrator?.email && <small className="mt-1 block font-normal text-muted">{estate.administrator.email}</small>}</Detail><Detail label="Active memberships"><span className="inline-flex items-center gap-1.5"><FiUsers size={14} />{estate.accountCount || 0}</span></Detail><Detail label="Workspace created">{estate.created || '—'}</Detail></div>
       <footer className="flex flex-wrap gap-2 border-t border-line p-4 dark:border-night-line sm:px-5">
         <button className="secondary-button" onClick={() => onEdit(estate)}><FiEdit2 size={14} />Edit details</button>
+        {onCommunications && <button className="secondary-button" onClick={() => onCommunications(estate)}>Communication channels</button>}
         {onSelectEstate && <button className="primary-button" onClick={() => onSelectEstate(estate)} disabled={estate.accessStatus !== 'Active'}><FiExternalLink size={14} />Open workspace</button>}
         {estate.accessStatus === 'Archived'
           ? <button className="secondary-button" onClick={() => setDecision({ estate, nextStatus: 'ACTIVE' })}><FiRotateCcw size={14} />Restore workspace</button>

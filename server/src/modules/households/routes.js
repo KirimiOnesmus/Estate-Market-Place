@@ -7,6 +7,7 @@ const prisma = require('../../db/prisma');
 const { HttpError, asyncHandler, validate } = require('../../http/errors');
 const { requireAuth, requireCsrf, requireSuperAdminForEstate } = require('../../middleware/auth');
 const { createToken, hashToken } = require('../../security/tokens');
+const { notifyEmailAddress, notifyEstate } = require('../communications/service');
 
 const router = Router();
 const registrationLimit = rateLimit({ windowMs: 60 * 60_000, limit: 10, standardHeaders: 'draft-7', legacyHeaders: false });
@@ -39,11 +40,12 @@ const listingSchema = z.object({
   price: z.coerce.number().int().positive().max(2_000_000_000),
   quantity: z.coerce.number().int().min(1).max(100_000),
   condition: z.enum(['New', 'Like new', 'Good', 'Fair']),
-  paymentOptions: z.array(z.enum(['M-Pesa', 'Bank transfer'])).min(1).max(2),
-  paymentDetails: z.record(z.string(), z.any()),
+  sellerMpesaPhone: z.string().trim().min(9).max(18).transform(normalizeMpesaPhone).refine(validMpesaPhone, 'Enter a valid Kenyan M-Pesa number.'),
   images: z.array(z.string().max(3_500_000).regex(/^data:image\/(png|jpeg|webp|gif);base64,/)).min(3).max(6),
 }).strict();
 const listingDecisionSchema = z.object({ status: z.enum(['APPROVED', 'REMOVED']) }).strict();
+const marketplaceBidSchema = z.object({ amount: z.coerce.number().int().positive().max(2_000_000_000), message: z.string().trim().max(1000).optional().default('') }).strict();
+const marketplaceBidDecisionSchema = z.object({ decision: z.enum(['ACCEPTED', 'DECLINED']) }).strict();
 const noticeDeadlineSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
@@ -83,6 +85,18 @@ function createIssueReferenceCode() {
 
 function normalizeOccupancy(value) {
   return value.toUpperCase() === 'OWNER' ? 'OWNER_OCCUPIED' : 'TENANT_OCCUPIED';
+}
+
+function normalizeMpesaPhone(input) {
+  const digits = input.replace(/\D/g, '');
+  if (digits.startsWith('254') && digits.length === 12) return digits;
+  if (digits.startsWith('0') && digits.length === 10) return `254${digits.slice(1)}`;
+  if ((digits.startsWith('7') || digits.startsWith('1')) && digits.length === 9) return `254${digits}`;
+  return digits;
+}
+
+function validMpesaPhone(value) {
+  return /^254(?:7\d{8}|1\d{8})$/.test(value);
 }
 
 function requestDto(request) {
@@ -176,20 +190,23 @@ function electionDto(election, membershipId) {
   };
 }
 
-function listingDto(listing) {
+function listingDto(listing, membershipId, includeSellerPhone = false) {
   const household = listing.seller.households[0];
   return {
     id: listing.id, title: listing.title, description: listing.description, category: listing.category,
-    price: listing.price, quantity: listing.quantity, condition: listing.condition,
-    paymentOptions: listing.paymentOptions, paymentDetails: listing.paymentDetails, images: listing.images,
+    price: listing.price, quantity: Math.max(0, listing.quantity - (listing.reservedQuantity || 0)), condition: listing.condition,
+    sellerMpesaPhone: includeSellerPhone || (membershipId && listing.sellerMembershipId === membershipId) ? listing.sellerMpesaPhone : undefined, images: listing.images,
     status: ({ PENDING_REVIEW: 'Pending review', APPROVED: 'Approved', REMOVED: 'Removed', SOLD: 'Sold' })[listing.status],
     owner: listing.seller.user.fullName || 'Resident',
+    isMine: Boolean(membershipId && listing.sellerMembershipId === membershipId),
+    bidCount: listing._count?.bids || 0,
     unit: household ? `${household.location.label} · ${household.unitCode}` : 'Estate resident',
     createdAt: listing.createdAt,
   };
 }
 
 const listingInclude = {
+  _count: { select: { bids: true } },
   seller: {
     include: {
       user: { select: { fullName: true } },
@@ -363,6 +380,7 @@ router.post('/register/:token', registrationLimit, validate(registrationSchema),
     return created;
   }, { isolationLevel: 'Serializable' });
 
+  await notifyEmailAddress(request.estateId, 'ACCOUNT_REGISTERED', request.email, { name: request.fullName, title: 'Registration received', message: 'Your estate registration is awaiting administrator review.' }).catch((error) => console.error('Could not queue registration email:', error.message));
   res.status(201).json({ data: { id: request.id, status: request.status }, requestId: req.id });
 }));
 
@@ -403,6 +421,8 @@ router.post('/admin/households', requireAuth, requireSuperAdminForEstate, requir
   }, { isolationLevel: 'Serializable' });
   const setupUrl = new URL('/setup-password', process.env.CLIENT_ORIGIN || 'http://localhost:5173');
   setupUrl.searchParams.set('token', household.token);
+  await notifyEmailAddress(req.auth.estate.id, 'ACCOUNT_APPROVED', household.user.email, { name: household.user.fullName, title: 'Your estate account is ready', message: 'Your account was created by the estate administrator. Set your password using this link.', url: setupUrl.toString() }).catch((error) => console.error('Could not queue resident setup email:', error.message));
+  await notifyEstate(req.auth.estate.id, 'ACCOUNT_APPROVED', { title: 'Your estate account is ready', message: 'Your account was created by the estate administrator.', linkPath: '/login', userIds: [household.user.id], roles: ['RESIDENT'] }).catch((error) => console.error('Could not queue resident account notification:', error.message));
   res.status(201).json({ data: { id: household.created.id, membershipId: household.membership.id, name: household.user.fullName, email: household.user.email, phone: household.user.phone, locationId: location.id, unit: `${location.label} · ${household.created.unitCode}`, unitNumber: household.created.unitCode, householdSize: household.created.householdSize, occupancy: household.created.occupancy === 'OWNER_OCCUPIED' ? 'Owner occupied' : 'Tenant occupied', nextOfKin: { name: household.created.nextOfKinName, phone: household.created.nextOfKinPhone, email: household.created.nextOfKinEmail }, accountStatus: 'Password setup pending', mustResetPassword: true, isHouseholdHolder: true, status: 'Verified', setupUrl: setupUrl.toString() }, requestId: req.id });
 }));
 
@@ -410,12 +430,12 @@ router.get('/marketplace/listings', requireAuth, asyncHandler(async (req, res) =
   if (!req.auth.estate) throw new HttpError(403, 'ESTATE_CONTEXT_REQUIRED', 'Select an estate workspace first.');
   const where = { estateId: req.auth.estate.id, status: 'APPROVED' };
   const listings = await prisma.marketplaceListing.findMany({ where, include: listingInclude, orderBy: { createdAt: 'desc' }, take: 200 });
-  res.json({ data: listings.map(listingDto), requestId: req.id });
+  res.json({ data: listings.map((listing) => listingDto(listing, req.auth.membership?.id)), requestId: req.id });
 }));
 
 router.get('/admin/marketplace/listings', requireAuth, requireSuperAdminForEstate, asyncHandler(async (req, res) => {
   const listings = await prisma.marketplaceListing.findMany({ where: { estateId: req.auth.estate.id }, include: listingInclude, orderBy: { createdAt: 'desc' }, take: 200 });
-  res.json({ data: listings.map(listingDto), requestId: req.id });
+  res.json({ data: listings.map((listing) => listingDto(listing, req.auth.membership?.id, true)), requestId: req.id });
 }));
 
 router.post('/marketplace/listings', requireAuth, requireCsrf, validate(listingSchema), asyncHandler(async (req, res) => {
@@ -424,8 +444,10 @@ router.post('/marketplace/listings', requireAuth, requireCsrf, validate(listingS
   if (!household) throw new HttpError(403, 'VERIFIED_HOUSEHOLD_REQUIRED', 'A verified household is required to create a marketplace listing.');
   const listing = await prisma.marketplaceListing.create({ data: { estateId: req.auth.estate.id, sellerMembershipId: req.auth.membership.id, ...req.body } });
   await prisma.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'MARKETPLACE_LISTING_SUBMITTED', entityType: 'MarketplaceListing', entityId: listing.id, requestId: req.id, metadata: {} } });
+  const seller = await prisma.estateMembership.findUnique({ where: { id: listing.sellerMembershipId }, select: { userId: true } });
+  await notifyEstate(listing.estateId, 'MARKETPLACE_LISTING_SUBMITTED', { title: 'Listing submitted for review', message: listing.title, linkPath: '/marketplace', userIds: seller ? [seller.userId] : [] }).catch((error) => console.error('Could not queue listing notification:', error.message));
   const hydrated = await prisma.marketplaceListing.findUnique({ where: { id: listing.id }, include: listingInclude });
-  res.status(201).json({ data: listingDto(hydrated), requestId: req.id });
+  res.status(201).json({ data: listingDto(hydrated, req.auth.membership.id), requestId: req.id });
 }));
 
 router.patch('/admin/marketplace/listings/:id', requireAuth, requireSuperAdminForEstate, requireCsrf, validate(candidateParamsSchema, 'params'), validate(listingDecisionSchema), asyncHandler(async (req, res) => {
@@ -434,7 +456,44 @@ router.patch('/admin/marketplace/listings/:id', requireAuth, requireSuperAdminFo
   if (listing.status === 'SOLD') throw new HttpError(409, 'LISTING_CLOSED', 'A sold listing cannot be changed.');
   const updated = await prisma.marketplaceListing.update({ where: { id: listing.id }, data: { status: req.body.status, reviewedById: req.auth.user.id, reviewedAt: new Date() }, include: listingInclude });
   await prisma.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: req.body.status === 'APPROVED' ? 'MARKETPLACE_LISTING_APPROVED' : 'MARKETPLACE_LISTING_REMOVED', entityType: 'MarketplaceListing', entityId: listing.id, requestId: req.id, metadata: {} } });
-  res.json({ data: listingDto(updated), requestId: req.id });
+  if (req.body.status === 'APPROVED') await notifyEstate(listing.estateId, 'MARKETPLACE_LISTING_APPROVED', { title: 'New marketplace item', message: updated.title, linkPath: '/marketplace' }).catch((error) => console.error('Could not queue marketplace notification:', error.message));
+  res.json({ data: listingDto(updated, req.auth.membership?.id), requestId: req.id });
+}));
+
+router.get('/marketplace/listings/:id/bids', requireAuth, validate(candidateParamsSchema, 'params'), asyncHandler(async (req, res) => {
+  if (!req.auth.estate || !req.auth.membership) throw new HttpError(403, 'ESTATE_MEMBERSHIP_REQUIRED', 'An active estate membership is required.');
+  const listing = await prisma.marketplaceListing.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id, status: 'APPROVED' }, select: { id: true, sellerMembershipId: true } });
+  if (!listing) throw new HttpError(404, 'LISTING_NOT_FOUND', 'Marketplace listing not found.');
+  const isSeller = listing.sellerMembershipId === req.auth.membership.id;
+  const bids = await prisma.marketplaceBid.findMany({ where: { listingId: listing.id, ...(isSeller ? {} : { bidderMembershipId: req.auth.membership.id }) }, include: { bidder: { include: { user: { select: { fullName: true } } } } }, orderBy: { createdAt: 'desc' } });
+  res.json({ data: bids.map((bid) => ({ id: bid.id, amount: bid.amount, message: bid.message, status: bid.status, createdAt: bid.createdAt, bidderName: bid.bidder.user.fullName || 'Resident', isMine: bid.bidderMembershipId === req.auth.membership.id })), requestId: req.id });
+}));
+
+router.post('/marketplace/listings/:id/bids', requireAuth, requireCsrf, validate(candidateParamsSchema, 'params'), validate(marketplaceBidSchema), asyncHandler(async (req, res) => {
+  if (!req.auth.estate || !req.auth.membership) throw new HttpError(403, 'ESTATE_MEMBERSHIP_REQUIRED', 'An active estate membership is required.');
+  const listing = await prisma.marketplaceListing.findFirst({ where: { id: req.params.id, estateId: req.auth.estate.id, status: 'APPROVED' } });
+  if (!listing) throw new HttpError(404, 'LISTING_NOT_FOUND', 'Marketplace listing not found.');
+  if (listing.sellerMembershipId === req.auth.membership.id) throw new HttpError(403, 'SELLER_CANNOT_BID', 'You cannot bid on your own listing.');
+  if (req.body.amount <= listing.price) throw new HttpError(422, 'BID_TOO_LOW', 'Enter an offer higher than the asking price.');
+  if (await prisma.marketplaceOrder.findFirst({ where: { listingId: listing.id, status: { in: ['PAYMENT_PENDING', 'ESCROW_HELD', 'RELEASE_REQUESTED', 'RELEASED'] } }, select: { id: true } })) throw new HttpError(409, 'LISTING_CHECKOUT_STARTED', 'This item already has a purchase in progress.');
+  const bid = await prisma.marketplaceBid.create({ data: { listingId: listing.id, bidderMembershipId: req.auth.membership.id, amount: req.body.amount, message: req.body.message } });
+  res.status(201).json({ data: { id: bid.id, amount: bid.amount, message: bid.message, status: bid.status, createdAt: bid.createdAt, isMine: true }, requestId: req.id });
+}));
+
+router.patch('/marketplace/listings/:id/bids/:bidId', requireAuth, requireCsrf, validate(z.object({ id: z.string().uuid(), bidId: z.string().uuid() }).strict(), 'params'), validate(marketplaceBidDecisionSchema), asyncHandler(async (req, res) => {
+  if (!req.auth.estate || !req.auth.membership) throw new HttpError(403, 'ESTATE_MEMBERSHIP_REQUIRED', 'An active estate membership is required.');
+  const bid = await prisma.marketplaceBid.findFirst({ where: { id: req.params.bidId, listingId: req.params.id, listing: { estateId: req.auth.estate.id, sellerMembershipId: req.auth.membership.id, status: 'APPROVED' } } });
+  if (!bid) throw new HttpError(404, 'BID_NOT_FOUND', 'Bid not found for a listing you own.');
+  if (bid.status !== 'PENDING') throw new HttpError(409, 'BID_ALREADY_REVIEWED', 'This offer has already been answered.');
+  const updated = await prisma.$transaction(async (tx) => {
+    if (req.body.decision === 'ACCEPTED') {
+      const activeOrder = await tx.marketplaceOrder.findFirst({ where: { listingId: req.params.id, status: { in: ['PAYMENT_PENDING', 'ESCROW_HELD', 'RELEASE_REQUESTED', 'RELEASED'] } }, select: { id: true } });
+      if (activeOrder) throw new HttpError(409, 'LISTING_CHECKOUT_STARTED', 'This item already has a purchase in progress.');
+      await tx.marketplaceBid.updateMany({ where: { listingId: bid.listingId, status: 'PENDING', id: { not: bid.id } }, data: { status: 'DECLINED', respondedAt: new Date() } });
+    }
+    return tx.marketplaceBid.update({ where: { id: bid.id }, data: { status: req.body.decision, respondedAt: new Date() } });
+  }, { isolationLevel: 'Serializable' });
+  res.json({ data: { id: updated.id, status: updated.status, amount: updated.amount }, requestId: req.id });
 }));
 
 router.get('/notices', requireAuth, asyncHandler(async (req, res) => {
@@ -513,6 +572,7 @@ router.post('/issues', requireAuth, requireCsrf, validate(issueSchema), asyncHan
     await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'ISSUE_REPORT_SUBMITTED', entityType: 'IssueReport', entityId: created.id, requestId: req.id, metadata: { category: created.category } } });
     return tx.issueReport.findUnique({ where: { id: created.id }, include: { updates: true, reporter: { include: { user: { select: { fullName: true } } } } } });
   });
+  await notifyEstate(req.auth.estate.id, 'ISSUE_REPORT_CREATED', { title: 'New resident issue report', message: `${report.title} · ${report.referenceCode}`, linkPath: '/issues', roles: ['ESTATE_ADMIN', 'COMMITTEE_MEMBER'] }).catch((error) => console.error('Could not queue issue report notification:', error.message));
   res.status(201).json({ data: issueDto(report), requestId: req.id });
 }));
 
@@ -525,6 +585,8 @@ router.patch('/admin/issues/:id', requireAuth, requireSuperAdminForEstate, requi
     await tx.auditEvent.create({ data: { scope: 'ESTATE', estateId: req.auth.estate.id, actorUserId: req.auth.user.id, action: 'ISSUE_REPORT_UPDATED', entityType: 'IssueReport', entityId: existing.id, requestId: req.id, metadata: { status: req.body.status } } });
     return tx.issueReport.findUnique({ where: { id: existing.id }, include: { updates: { orderBy: { createdAt: 'asc' } }, reporter: { include: { user: { select: { fullName: true } } } } } });
   });
+  const reporter = await prisma.estateMembership.findUnique({ where: { id: existing.reporterMembershipId }, select: { userId: true } });
+  if (reporter) await notifyEstate(req.auth.estate.id, 'ISSUE_REPORT_UPDATED', { title: 'Your issue report was updated', message: `${report.title} · ${req.body.message}`, linkPath: '/issues', userIds: [reporter.userId], roles: ['RESIDENT', 'COMMITTEE_MEMBER', 'ESTATE_ADMIN'] }).catch((error) => console.error('Could not queue issue update notification:', error.message));
   res.json({ data: issueDto(report), requestId: req.id });
 }));
 
@@ -605,6 +667,7 @@ router.post('/admin/households/:id/password-link', requireAuth, requireSuperAdmi
   });
   const setupUrl = new URL('/setup-password', process.env.CLIENT_ORIGIN || 'http://localhost:5173');
   setupUrl.searchParams.set('token', token);
+  await notifyEmailAddress(req.auth.estate.id, 'PASSWORD_UPDATED', household.representative.user.email, { name: household.representative.user.fullName, title: 'Password reset link', message: 'Use this link to set a new password for your account.', url: setupUrl.toString() }).catch((error) => console.error('Could not queue password reset email:', error.message));
   res.status(201).json({ data: { setupUrl: setupUrl.toString(), expiresAt, email: household.representative.user.email }, requestId: req.id });
 }));
 
@@ -670,6 +733,7 @@ router.post('/admin/campaigns', requireAuth, requireSuperAdminForEstate, require
     } });
     return created;
   });
+  await notifyEstate(req.auth.estate.id, 'CAMPAIGN_CREATED', { title: 'Campaign needs committee review', message: campaign.title, linkPath: '/committee/votes', roles: ['COMMITTEE_MEMBER'] }).catch((error) => console.error('Could not queue campaign notification:', error.message));
   res.status(201).json({ data: await campaignWithContributionTotals(campaign), requestId: req.id });
 }));
 
@@ -764,6 +828,8 @@ router.post('/committee/campaigns/:id/votes', requireAuth, requireCommittee, req
     if (error.code === 'P2002') throw new HttpError(409, 'CAMPAIGN_VOTE_LOCKED', 'Your campaign vote is already recorded and cannot be changed.');
     throw error;
   }
+  if (result.status === 'LIVE') await notifyEstate(req.auth.estate.id, 'CAMPAIGN_PUBLISHED', { title: 'New community campaign', message: result.title, linkPath: '/fundraisers' }).catch((error) => console.error('Could not queue campaign notification:', error.message));
+  if (result.status === 'LIVE' || result.status === 'REJECTED') await notifyEstate(req.auth.estate.id, 'CAMPAIGN_DECISION', { title: result.status === 'LIVE' ? 'Your campaign was approved' : 'Your campaign was declined', message: result.title, linkPath: '/fundraisers', userIds: [result.createdByUserId], roles: ['RESIDENT', 'COMMITTEE_MEMBER', 'ESTATE_ADMIN'] }).catch((error) => console.error('Could not queue campaign decision:', error.message));
   res.json({ data: { ...(await campaignWithContributionTotals(result)), ownVote: result.votes.find((vote) => vote.voterMembershipId === req.auth.membership.id) || null }, requestId: req.id });
 }));
 
@@ -801,6 +867,7 @@ router.post('/admin/elections', requireAuth, requireSuperAdminForEstate, require
     } });
     return loadElection(tx, created.id, req.auth.membership?.id);
   });
+  await notifyEstate(req.auth.estate.id, 'ELECTION_CREATED', { title: 'Election is open', message: election.title, linkPath: '/elections' }).catch((error) => console.error('Could not queue election notification:', error.message));
   res.status(201).json({ data: election, requestId: req.id });
 }));
 
@@ -891,6 +958,7 @@ router.post('/admin/elections/:id/close', requireAuth, requireSuperAdminForEstat
     } });
     return updated;
   });
+  if (result.status === 'CLOSED') await notifyEstate(req.auth.estate.id, 'ELECTION_COMPLETED', { title: 'Election results are ready', message: election.title, linkPath: '/elections' }).catch((error) => console.error('Could not queue election result notification:', error.message));
   res.json({ data: { id: result.id, status: result.status, winnerId: result.winnerCandidateId }, requestId: req.id });
 }));
 
@@ -912,6 +980,7 @@ router.post('/admin/elections/:id/resolve', requireAuth, requireSuperAdminForEst
       metadata: { winnerCandidateId: winner.id },
     } });
   });
+  await notifyEstate(req.auth.estate.id, 'ELECTION_COMPLETED', { title: 'Election results are ready', message: election.title, linkPath: '/elections' }).catch((error) => console.error('Could not queue election result notification:', error.message));
   res.json({ data: { id: election.id, status: 'Closed', winnerId: winner.id }, requestId: req.id });
 }));
 
@@ -1080,6 +1149,8 @@ router.post('/admin/registration-requests/:id/approve', requireAuth, requireSupe
 
   const setupUrl = setupToken ? new URL('/setup-password', process.env.CLIENT_ORIGIN || 'http://localhost:5173') : null;
   if (setupUrl) setupUrl.searchParams.set('token', setupToken);
+  await notifyEmailAddress(req.auth.estate.id, 'ACCOUNT_APPROVED', approved.user.email, { name: approved.user.fullName, title: 'Your estate account is approved', message: 'Your registration has been approved. Set your password using the link below.', url: setupUrl?.toString() || `${process.env.CLIENT_ORIGIN || 'http://localhost:5173'}/login` }).catch((error) => console.error('Could not queue account approval email:', error.message));
+  await notifyEstate(req.auth.estate.id, 'ACCOUNT_APPROVED', { title: 'Your estate account is approved', message: 'Your resident registration has been approved.', linkPath: '/login', userIds: [approved.user.id], roles: ['RESIDENT'] }).catch((error) => console.error('Could not queue registration notification:', error.message));
   res.json({ data: {
     id: approved.request.id,
     status: approved.request.status,

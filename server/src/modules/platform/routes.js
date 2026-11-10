@@ -5,6 +5,7 @@ const prisma = require('../../db/prisma');
 const { HttpError, asyncHandler, validate } = require('../../http/errors');
 const { requireAuth, requireCsrf, requireSuperAdmin } = require('../../middleware/auth');
 const { createToken, hashToken } = require('../../security/tokens');
+const { encryptSecret, notifyEstate, publicSettings } = require('../communications/service');
 
 const router = Router();
 const estateSchema = z.object({
@@ -44,6 +45,11 @@ const platformSettingsSchema = z.object({
   supportEmail: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
   maintenanceMode: z.boolean(),
 }).strict();
+const communicationParamsSchema = z.object({ estateId: z.string().uuid() }).strict();
+const communicationSettingsSchema = z.object({
+  emailEnabled: z.boolean(), smtpHost: z.string().trim().max(255), smtpPort: z.number().int().min(1).max(65535), smtpSecure: z.boolean(), smtpUsername: z.string().trim().max(255), smtpPassword: z.string().max(500).optional().default(''), emailFromName: z.string().trim().max(120), emailFromAddress: z.string().trim().email().max(254).or(z.literal('')),
+  whatsappEnabled: z.boolean(), whatsappPhoneNumberId: z.string().trim().max(120), whatsappAccessToken: z.string().max(3000).optional().default(''), whatsappApiVersion: z.string().regex(/^v\d+\.\d+$/), whatsappLanguage: z.string().trim().min(2).max(12), eventSettings: z.record(z.string(), z.object({ enabled: z.boolean().optional(), email: z.object({ enabled: z.boolean().optional(), subject: z.string().max(200).optional(), body: z.string().max(5000).optional() }).optional(), whatsapp: z.object({ enabled: z.boolean().optional(), templateName: z.string().regex(/^[a-z0-9_]{1,512}$/).optional(), language: z.string().max(12).optional() }).optional() }).strict()).default({}),
+}).strict();
 
 function membershipStatusLabel(status, userStatus) {
   if (userStatus !== 'ACTIVE') return userStatus === 'ARCHIVED' ? 'Archived' : 'Suspended';
@@ -77,6 +83,24 @@ function supportCaseDto(item) {
     })),
   };
 }
+
+router.get('/platform/estates/:estateId/communications', requireAuth, requireSuperAdmin, validate(communicationParamsSchema, 'params'), asyncHandler(async (req, res) => {
+  const estate = await prisma.estate.findUnique({ where: { id: req.params.estateId }, select: { id: true, name: true } });
+  if (!estate) throw new HttpError(404, 'ESTATE_NOT_FOUND', 'Estate not found.');
+  const settings = await prisma.estateCommunicationSetting.findUnique({ where: { estateId: estate.id } });
+  res.json({ data: { estate, settings: settings ? publicSettings(settings) : null }, requestId: req.id });
+}));
+
+router.put('/platform/estates/:estateId/communications', requireAuth, requireSuperAdmin, requireCsrf, validate(communicationParamsSchema, 'params'), validate(communicationSettingsSchema), asyncHandler(async (req, res) => {
+  const estate = await prisma.estate.findUnique({ where: { id: req.params.estateId }, select: { id: true } });
+  if (!estate) throw new HttpError(404, 'ESTATE_NOT_FOUND', 'Estate not found.');
+  if ((req.body.emailEnabled || req.body.whatsappEnabled) && !process.env.COMMUNICATIONS_ENCRYPTION_KEY) throw new HttpError(503, 'COMMUNICATIONS_ENCRYPTION_NOT_CONFIGURED', 'Set COMMUNICATIONS_ENCRYPTION_KEY in the server environment before enabling communications.');
+  const existing = await prisma.estateCommunicationSetting.findUnique({ where: { estateId: estate.id } });
+  const { smtpPassword, whatsappAccessToken, ...fields } = req.body;
+  const settings = await prisma.estateCommunicationSetting.upsert({ where: { estateId: estate.id }, create: { ...fields, estateId: estate.id, smtpPasswordEncrypted: smtpPassword ? encryptSecret(smtpPassword) : null, whatsappAccessTokenEncrypted: whatsappAccessToken ? encryptSecret(whatsappAccessToken) : null }, update: { ...fields, ...(smtpPassword ? { smtpPasswordEncrypted: encryptSecret(smtpPassword) } : {}), ...(whatsappAccessToken ? { whatsappAccessTokenEncrypted: encryptSecret(whatsappAccessToken) } : {}) } });
+  await prisma.auditEvent.create({ data: { scope: 'PLATFORM', actorUserId: req.auth.user.id, action: 'ESTATE_COMMUNICATION_SETTINGS_UPDATED', entityType: 'Estate', entityId: estate.id, requestId: req.id, metadata: { emailEnabled: settings.emailEnabled, whatsappEnabled: settings.whatsappEnabled } } });
+  res.json({ data: publicSettings(settings), requestId: req.id });
+}));
 
 router.get('/estates', asyncHandler(async (req, res) => {
   const estates = await prisma.estate.findMany({
@@ -225,6 +249,7 @@ router.post('/support-cases', requireAuth, requireCsrf, validate(supportCreateSc
     } });
     return supportCase;
   });
+  if (created.estateId && created.requesterUserId) await notifyEstate(created.estateId, 'SUPPORT_CREATED', { title: 'Support request received', message: created.subject, linkPath: '/issues', userIds: [created.requesterUserId], roles: ['RESIDENT', 'COMMITTEE_MEMBER', 'ESTATE_ADMIN'] }).catch((error) => console.error('Could not queue support notification:', error.message));
   res.status(201).json({ data: supportCaseDto(created), requestId: req.id });
 }));
 
@@ -240,11 +265,12 @@ router.patch('/platform/support-cases/:supportCaseId', requireAuth, requireSuper
     } });
     return supportCase;
   });
+  if (existing.estateId && existing.requesterUserId) await notifyEstate(existing.estateId, 'SUPPORT_UPDATED', { title: 'Support request updated', message: `${updated.subject}: ${updated.status.replaceAll('_', ' ').toLowerCase()}`, linkPath: '/issues', userIds: [existing.requesterUserId], roles: ['RESIDENT', 'COMMITTEE_MEMBER', 'ESTATE_ADMIN'] }).catch((error) => console.error('Could not queue support update:', error.message));
   res.json({ data: supportCaseDto(updated), requestId: req.id });
 }));
 
 router.post('/platform/support-cases/:supportCaseId/comments', requireAuth, requireSuperAdmin, requireCsrf, validate(supportParamsSchema, 'params'), validate(supportCommentSchema), asyncHandler(async (req, res) => {
-  const existing = await prisma.supportCase.findUnique({ where: { id: req.params.supportCaseId }, select: { id: true, estateId: true } });
+  const existing = await prisma.supportCase.findUnique({ where: { id: req.params.supportCaseId }, select: { id: true, estateId: true, requesterUserId: true } });
   if (!existing) throw new HttpError(404, 'SUPPORT_CASE_NOT_FOUND', 'Support case not found.');
   const comment = await prisma.$transaction(async (tx) => {
     const created = await tx.supportComment.create({ data: {
@@ -261,6 +287,7 @@ router.post('/platform/support-cases/:supportCaseId/comments', requireAuth, requ
     } });
     return created;
   });
+  if (existing.estateId && existing.requesterUserId) await notifyEstate(existing.estateId, 'SUPPORT_UPDATED', { title: 'New support reply', message: req.body.message, linkPath: '/issues', userIds: [existing.requesterUserId], roles: ['RESIDENT', 'COMMITTEE_MEMBER', 'ESTATE_ADMIN'] }).catch((error) => console.error('Could not queue support reply:', error.message));
   res.status(201).json({ data: { id: comment.id, author: comment.authorName, message: comment.message, createdAt: comment.createdAt }, requestId: req.id });
 }));
 

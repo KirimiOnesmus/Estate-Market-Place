@@ -32,6 +32,8 @@ import { MarketplaceReviewPage } from '../features/admin/pages/MarketplaceReview
 import { MarketplaceListingDetailsPage } from '../features/admin/pages/MarketplaceListingDetailsPage.jsx'
 import { ListingDetailsPage } from '../features/resident/pages/ListingDetailsPage.jsx'
 import { MarketplaceCartPage } from '../features/resident/pages/MarketplaceCartPage.jsx'
+import { MarketplaceCheckoutPage } from '../features/resident/pages/MarketplaceCheckoutPage.jsx'
+import { MarketplaceEscrowPage } from '../features/admin/pages/MarketplaceEscrowPage.jsx'
 import { ResidentServicesPage } from '../features/resident/pages/ResidentServicesPage.jsx'
 import { CreatePollPage } from '../features/admin/pages/CreatePollPage.jsx'
 import { ElectionsPage } from '../features/admin/pages/ElectionsPage.jsx'
@@ -51,6 +53,8 @@ import { PlatformAccountFormPage } from '../features/super-admin/pages/AccountFo
 import { PlatformEstateFormPage } from '../features/super-admin/pages/EstateFormPage.jsx'
 import { PlatformSupportDetailsPage } from '../features/super-admin/pages/SupportDetailsPage.jsx'
 import { CreateSupportCasePage } from '../features/super-admin/pages/CreateSupportCasePage.jsx'
+import { PlatformCommunicationsPage } from '../features/super-admin/pages/CommunicationsPage.jsx'
+import { NotificationDetailsPage } from '../features/resident/pages/NotificationDetailsPage.jsx'
 import { api } from '../api.js'
 
 export default function App() {
@@ -81,6 +85,13 @@ export default function App() {
   const [savedIds, setSavedIds] = useState([])
   const [cart, setCart] = useState([])
   const [purchases, setPurchases] = useState([])
+  const [selectedMarketplaceOrderId, setSelectedMarketplaceOrderId] = useState(null)
+  const [marketplaceBids, setMarketplaceBids] = useState([])
+  const [marketplaceOrders, setMarketplaceOrders] = useState([])
+  const [marketplaceB2cAvailable, setMarketplaceB2cAvailable] = useState(false)
+  const [marketplaceOrdersStatus, setMarketplaceOrdersStatus] = useState('loading')
+  const [marketplaceOrdersError, setMarketplaceOrdersError] = useState('')
+  const [marketplaceBidRefresh, setMarketplaceBidRefresh] = useState(0)
   const [toastMessage, setToastMessage] = useState('')
   const [residents, setResidents] = useState([])
   const [selectedResidentId, setSelectedResidentId] = useState(null)
@@ -121,6 +132,7 @@ export default function App() {
   const [platformSettingsError, setPlatformSettingsError] = useState('')
   const [selectedPlatformAccount, setSelectedPlatformAccount] = useState(null)
   const [selectedPlatformEstate, setSelectedPlatformEstate] = useState(null)
+  const [selectedNotificationId, setSelectedNotificationId] = useState(() => window.location.pathname.match(/^\/notifications\/([0-9a-f-]+)$/i)?.[1] || '')
   const [selectedSupportCaseId, setSelectedSupportCaseId] = useState(null)
   const [selectedNotice, setSelectedNotice] = useState(null)
 
@@ -252,6 +264,31 @@ export default function App() {
   }, [authenticatedSession, listingRefresh])
 
   useEffect(() => {
+    if (!authenticatedSession?.estate?.id || ['SUPER_ADMIN'].includes(authenticatedSession.role)) return undefined
+    let current = true
+    api.listMyMarketplaceOrders().then((items) => { if (current) setPurchases(items) }).catch(() => {})
+    return () => { current = false }
+  }, [authenticatedSession?.estate?.id, authenticatedSession?.role, page])
+
+  useEffect(() => {
+    if (!authenticatedSession?.estate?.id || page !== 'marketplace-item' || !selectedListingId) return undefined
+    let current = true
+    const loadBids = () => api.listMarketplaceBids(selectedListingId).then((items) => { if (current) setMarketplaceBids(items) }).catch(() => {})
+    loadBids()
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') loadBids() }, 5000)
+    return () => { current = false; window.clearInterval(timer) }
+  }, [authenticatedSession?.estate?.id, page, selectedListingId, marketplaceBidRefresh])
+
+  useEffect(() => {
+    if (!authenticatedSession?.estate?.id || page !== 'marketplace-escrow' || !['SUPER_ADMIN', 'ESTATE_ADMIN'].includes(authenticatedSession.role)) return undefined
+    let current = true
+    const loadOrders = () => api.listAdminMarketplaceOrders().then((result) => { if (current) { setMarketplaceOrders(result.orders); setMarketplaceB2cAvailable(result.mpesaB2cPayoutAvailable); setMarketplaceOrdersStatus('ready'); setMarketplaceOrdersError('') } }).catch((requestError) => { if (current) { setMarketplaceOrdersError(requestError.message); setMarketplaceOrdersStatus('error') } })
+    loadOrders()
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') loadOrders() }, 5000)
+    return () => { current = false; window.clearInterval(timer) }
+  }, [authenticatedSession?.estate?.id, authenticatedSession?.role, page])
+
+  useEffect(() => {
     if (!authenticatedSession?.estate?.id) return undefined
     let current = true
     const admin = ['SUPER_ADMIN', 'ESTATE_ADMIN'].includes(authenticatedSession.role)
@@ -317,7 +354,11 @@ export default function App() {
       if (!current) return
       setAuthenticatedSession(session)
       setSessionCheckStatus('ready')
-      if (initialPath.current === '/' || roleFromPath(initialPath.current)) {
+      if (initialPath.current.startsWith('/notifications/')) {
+        setRole(uiRoleForSession(session))
+        setSelectedNotificationId(initialPath.current.split('/')[2])
+        setPage('notification-detail')
+      } else if (initialPath.current === '/' || roleFromPath(initialPath.current)) {
         const nextRole = uiRoleForSession(session)
         setRole(nextRole)
         setPage('home')
@@ -328,7 +369,11 @@ export default function App() {
       setAuthenticatedSession(null)
       setSessionCheckStatus('ready')
       const currentPath = window.location.pathname
-      if (currentPath === '/' || roleFromPath(currentPath)) {
+      if (currentPath.startsWith('/notifications/')) {
+        setRole('resident')
+        setPage('login')
+        window.history.replaceState({}, '', `/login?returnTo=${encodeURIComponent(currentPath + window.location.search)}`)
+      } else if (currentPath === '/' || roleFromPath(currentPath)) {
         setRole('resident')
         setPage('login')
         window.history.replaceState({}, '', '/login')
@@ -551,8 +596,15 @@ export default function App() {
     setAuthenticatedSession(session)
     const nextRole = uiRoleForSession(session)
     setRole(nextRole)
-    setPage('home')
-    window.history.replaceState({}, '', `/${nextRole}`)
+    const returnTo = new URLSearchParams(window.location.search).get('returnTo')
+    if (returnTo?.startsWith('/notifications/')) {
+      setSelectedNotificationId(returnTo.split('/')[2]?.split('?')[0] || '')
+      setPage('notification-detail')
+      window.history.replaceState({}, '', returnTo)
+    } else {
+      setPage('home')
+      window.history.replaceState({}, '', `/${nextRole}`)
+    }
   }
   const signOut = async () => {
     try {
@@ -574,17 +626,38 @@ export default function App() {
   const filteredListings = useMemo(() => listings, [listings])
   const selectedCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId)
   const selectedListing = listings.find((listing) => listing.id === selectedListingId)
-  const completePurchase = (listing, quantity, paymentMethod) => {
-    const available = listing.quantity ?? 1
-    if (quantity > available) { notify('The available quantity changed. Please update your order.'); return }
-    const order = { id: `ORD-${crypto.randomUUID().slice(0, 8)}`, listingId: listing.id, title: listing.title, quantity, amount: listing.price * quantity, paymentMethod, status: 'Paid (preview)', date: new Date().toLocaleString() }
-    const remaining = available - quantity
-    setPurchases((items) => [order, ...items])
-    setListings((items) => items.map((item) => item.id === listing.id ? { ...item, quantity: remaining, status: remaining === 0 ? 'Sold' : item.status } : item))
+  const completePurchase = async (listing, quantity, phone, bidId) => {
+    if (listing.isMine) throw new Error('You cannot buy your own marketplace listing.')
+    const order = await api.createMarketplaceOrder(listing.id, { quantity, phone, ...(bidId ? { bidId } : {}) })
+    setSelectedMarketplaceOrderId(order.id)
+    setPurchases((items) => [order, ...items.filter((item) => item.id !== order.id)])
     setCart((items) => items.filter((item) => item.listingId !== listing.id))
-    notify(`Order ${order.id} recorded. ${remaining === 0 ? 'The listing has been removed because it is sold out.' : `${remaining} item${remaining === 1 ? '' : 's'} remain.`}`)
+    setListingRefresh((value) => value + 1)
+    navigate('marketplace-checkout')
+    notify('M-Pesa payment prompt sent. Approve it on your phone to continue.')
+    return order
   }
-  const addToCart = (listing, quantity) => { setCart((items) => { const found = items.find((item) => item.listingId === listing.id); const nextQuantity = (found?.quantity || 0) + quantity; if (nextQuantity > (listing.quantity ?? 1)) { notify('There is not enough stock for that cart quantity.'); return items } return found ? items.map((item) => item.listingId === listing.id ? { ...item, quantity: nextQuantity } : item) : [...items, { listingId: listing.id, quantity }] }); notify(`${listing.title} added to your cart.`) }
+  const addToCart = (listing, quantity) => {
+    if (listing.isMine) { notify('You cannot add your own listing to the cart.'); return }
+    setCart((items) => { const found = items.find((item) => item.listingId === listing.id); const nextQuantity = (found?.quantity || 0) + quantity; if (nextQuantity > (listing.quantity ?? 1)) { notify('There is not enough stock for that cart quantity.'); return items } return found ? items.map((item) => item.listingId === listing.id ? { ...item, quantity: nextQuantity } : item) : [...items, { listingId: listing.id, quantity }] })
+    notify(`${listing.title} added to your cart.`)
+  }
+  const submitMarketplaceBid = async (listing, amount, message) => {
+    const offer = await api.createMarketplaceBid(listing.id, { amount, message })
+    setMarketplaceBids((items) => [offer, ...items])
+    setMarketplaceBidRefresh((value) => value + 1)
+    notify('Your offer was sent to the seller.')
+  }
+  const respondToMarketplaceBid = async (listing, offer, decision) => {
+    await api.respondToMarketplaceBid(listing.id, offer.id, decision)
+    setMarketplaceBidRefresh((value) => value + 1)
+    notify(decision === 'ACCEPTED' ? 'Offer accepted. The buyer can now pay the agreed amount.' : 'Offer declined.')
+  }
+  const releaseMarketplaceOrder = async (orderId, payoutReference) => {
+    const updated = await api.releaseMarketplaceOrder(orderId, payoutReference)
+    setMarketplaceOrders((items) => items.map((item) => item.id === updated.id ? { ...item, ...updated, status: updated.status, payoutReference: updated.payoutReference } : item))
+    notify(updated.status === 'PAYOUT_PENDING' ? `M-Pesa payout started for ${updated.reference}.` : `Seller payout recorded for ${updated.reference}.`)
+  }
   const retryEstateAdminData = () => { setEstateAdminStatus('loading'); setEstateAdminError(''); setEstateAdminRefresh((value) => value + 1) }
   const saveResidentDetails = async (id, values) => {
     const updated = await api.updateEstateHousehold(id, values)
@@ -608,11 +681,13 @@ export default function App() {
   const openResidentDetails = (resident) => { setSelectedResidentId(resident.id); navigate('resident-detail') }
 
   const resolvePage = () => {
+    if (page === 'notification-detail') return <NotificationDetailsPage notificationId={selectedNotificationId} onBack={() => navigate('home')} onOpenDestination={(path) => navigate(notificationDestination(path))} />
     if (page === 'home' && role === 'resident') return <ResidentOverviewPage listings={listings} campaigns={campaigns} notices={notices} reports={reports} savedIds={savedIds} toggleSaved={(listingId) => setSavedIds((items) => items.includes(listingId) ? items.filter((item) => item !== listingId) : [...items, listingId])} navigate={navigate} estateName={authenticatedSession?.estate?.name || 'your estate'} />
     if (page === 'home' && role === 'admin') return <AdminOverviewPage overview={estateAdminOverview} residents={residents} residentRequests={residentRequests} notices={notices} reports={reports} loading={estateAdminStatus === 'loading'} error={estateAdminError} onRetry={retryEstateAdminData} navigate={navigate} onResidentSelect={openResidentDetails} />
     if (page === 'home' && role === 'committee') return <CommitteeOverviewPage campaigns={campaigns} navigate={navigate} />
     if (page === 'home' && role === 'super-admin') return <SuperAdminOverviewPage overview={platformOverview} estates={platformEstates} loading={platformOverviewStatus === 'loading'} error={platformOverviewError} onRetry={() => { setPlatformOverviewStatus('loading'); setPlatformOverviewError(''); setPlatformOverviewRefresh((value) => value + 1) }} navigate={navigate} />
-    if (page === 'platform-estates' && role === 'super-admin') return <PlatformEstatesPage estates={platformEstates} loading={platformEstatesStatus === 'loading'} loadError={platformEstatesError} onRetry={() => { setPlatformEstatesStatus('loading'); setPlatformEstatesError(''); setPlatformEstatesRefresh((value) => value + 1) }} onAdd={() => { setSelectedPlatformEstate(null); navigate('platform-estate-new') }} onEdit={(estate) => { setSelectedPlatformEstate(estate); navigate('platform-estate-edit') }} onSetAccess={setPlatformEstateAccess} onSelectEstate={async (estate) => { try { completeLogin(await api.selectEstate(estate.id)); notify(`Opened ${estate.name}.`) } catch (requestError) { notify(requestError.message) } }} />
+    if (page === 'platform-estates' && role === 'super-admin') return <PlatformEstatesPage estates={platformEstates} loading={platformEstatesStatus === 'loading'} loadError={platformEstatesError} onRetry={() => { setPlatformEstatesStatus('loading'); setPlatformEstatesError(''); setPlatformEstatesRefresh((value) => value + 1) }} onAdd={() => { setSelectedPlatformEstate(null); navigate('platform-estate-new') }} onEdit={(estate) => { setSelectedPlatformEstate(estate); navigate('platform-estate-edit') }} onCommunications={(estate) => { setSelectedPlatformEstate(estate); navigate('platform-estate-communications') }} onSetAccess={setPlatformEstateAccess} onSelectEstate={async (estate) => { try { completeLogin(await api.selectEstate(estate.id)); notify(`Opened ${estate.name}.`) } catch (requestError) { notify(requestError.message) } }} />
+    if (page === 'platform-estate-communications' && role === 'super-admin' && selectedPlatformEstate) return <PlatformCommunicationsPage estate={selectedPlatformEstate} onBack={() => navigate('platform-estates')} onSaved={() => setAuditRefresh((value) => value + 1)} />
     if (page === 'platform-estate-new' && role === 'super-admin') return <PlatformEstateFormPage onCancel={() => navigate('platform-estates')} onSave={savePlatformEstate} />
     if (page === 'platform-estate-edit' && role === 'super-admin') return <PlatformEstateFormPage estate={selectedPlatformEstate} onCancel={() => navigate('platform-estates')} onSave={savePlatformEstate} />
     if (page === 'platform-accounts' && role === 'super-admin') return <PlatformAccountsPage accounts={platformAccounts} hasActiveEstate={platformEstates.some((estate) => estate.accessStatus === 'Active')} loading={platformAccountsStatus === 'loading'} loadError={platformAccountsError} onRetry={() => { setPlatformAccountsStatus('loading'); setPlatformAccountsError(''); setPlatformAccountsRefresh((value) => value + 1) }} onAdd={() => { setSelectedPlatformAccount(null); navigate('platform-account-new') }} onEdit={(account) => { setSelectedPlatformAccount(account); navigate('platform-account-edit') }} onToggleAccess={togglePlatformAccountAccess} onSetupLink={createPlatformAccountSetupLink} />
@@ -623,12 +698,14 @@ export default function App() {
     if (page === 'platform-support-detail' && role === 'super-admin') return <PlatformSupportDetailsPage supportCase={supportCases.find((item) => item.id === selectedSupportCaseId)} onBack={() => navigate('platform-support')} onUpdate={updateSupportCase} onComment={addSupportComment} />
     if (page === 'platform-audit' && role === 'super-admin') return <PlatformAuditPage events={platformAuditEvents} status={auditStatus} error={auditError} onRetry={() => setAuditRefresh((value) => value + 1)} />
     if (page === 'platform-settings' && role === 'super-admin') return <PlatformSettingsPage settings={platformSettings} status={platformSettingsStatus} error={platformSettingsError} onSave={async (settings) => { const saved = await api.updatePlatformSettings(settings); setPlatformSettings(saved); setAuditRefresh((value) => value + 1); notify('Platform settings saved.') }} />
+    if (page === 'marketplace-escrow' && role === 'admin') return <MarketplaceEscrowPage orders={marketplaceOrders} b2cAvailable={marketplaceB2cAvailable} loading={marketplaceOrdersStatus === 'loading'} error={marketplaceOrdersError} onRetry={() => { setMarketplaceOrdersStatus('loading'); api.listAdminMarketplaceOrders().then((result) => { setMarketplaceOrders(result.orders); setMarketplaceB2cAvailable(result.mpesaB2cPayoutAvailable); setMarketplaceOrdersStatus('ready'); setMarketplaceOrdersError('') }).catch((requestError) => { setMarketplaceOrdersStatus('error'); setMarketplaceOrdersError(requestError.message) }) }} onRelease={releaseMarketplaceOrder} />
+    if (page === 'marketplace-checkout') return <MarketplaceCheckoutPage key={selectedMarketplaceOrderId} orderId={selectedMarketplaceOrderId} onBack={() => { setListingRefresh((value) => value + 1); navigate('marketplace-cart') }} />
     if (page === 'resident-space' && role !== 'resident') return <ResidentServicesPage navigate={navigate} />
     if (page === 'marketplace-review' && role === 'admin') return <MarketplaceReviewPage listings={listings} status={listingStatus} error={listingError} onRetry={() => setListingRefresh((value) => value + 1)} onView={(listing) => { setSelectedListingId(listing.id); navigate('marketplace-detail') }} onApprove={(listing) => reviewMarketplaceListing(listing, 'APPROVED')} onRemove={(listing) => reviewMarketplaceListing(listing, 'REMOVED')} />
     if (page === 'marketplace-detail' && role === 'admin') return <MarketplaceListingDetailsPage listing={selectedListing} navigate={navigate} onApprove={(listing) => reviewMarketplaceListing(listing, 'APPROVED')} onRemove={(listing) => { reviewMarketplaceListing(listing, 'REMOVED'); navigate('marketplace-review') }} />
-    if (page === 'marketplace') { const visibleListings = filteredListings.filter((listing) => listing.status !== 'Pending review' && listing.status !== 'Removed' && listing.status !== 'Sold' && (listing.quantity ?? 1) > 0); return <MarketplacePage listings={visibleListings} savedIds={savedIds} toggleSaved={(id) => setSavedIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onCreate={() => navigate('listing-new')} onView={(listing) => { setSelectedListingId(listing.id); navigate('marketplace-item') }} onCart={() => navigate('marketplace-cart')} cartCount={cart.reduce((sum, item) => sum + item.quantity, 0)} loading={listingStatus === 'loading'} error={listingStatus === 'error' ? listingError : ''} onRetry={() => { setListingStatus('loading'); setListingError(''); setListingRefresh((value) => value + 1) }} /> }
-    if (page === 'marketplace-item') return <ListingDetailsPage listing={selectedListing} navigate={navigate} onPurchase={completePurchase} onAddToCart={addToCart} onBid={(listing, amount) => { setListings((items) => items.map((item) => item.id === listing.id ? { ...item, bids: [...(item.bids || []), { amount, resident: 'Amara Kimani', date: new Date().toLocaleString(), status: 'Pending seller response' }] } : item)); notify('Your bid was recorded in this preview.') }} />
-    if (page === 'marketplace-cart') return <MarketplaceCartPage cart={cart} listings={listings} purchases={purchases} navigate={navigate} onRemove={(listingId) => setCart((items) => items.filter((item) => item.listingId !== listingId))} onCheckout={(items) => { items.forEach((item) => completePurchase(item.listing, item.quantity, item.paymentMethod)); setCart([]) }} />
+    if (page === 'marketplace') { const visibleListings = filteredListings.filter((listing) => listing.status !== 'Pending review' && listing.status !== 'Removed' && listing.status !== 'Sold' && (listing.quantity ?? 1) > 0); return <MarketplacePage listings={visibleListings} savedIds={savedIds} toggleSaved={(id) => setSavedIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id])} onCreate={() => navigate('listing-new')} onView={(listing) => { setSelectedListingId(listing.id); setMarketplaceBids([]); navigate('marketplace-item') }} onCart={() => navigate('marketplace-cart')} cartCount={cart.reduce((sum, item) => sum + item.quantity, 0)} loading={listingStatus === 'loading'} error={listingStatus === 'error' ? listingError : ''} onRetry={() => { setListingStatus('loading'); setListingError(''); setListingRefresh((value) => value + 1) }} /> }
+    if (page === 'marketplace-item') return <ListingDetailsPage listing={selectedListing} bids={marketplaceBids} navigate={navigate} onPurchase={completePurchase} onAddToCart={addToCart} onBid={submitMarketplaceBid} onRespondToBid={respondToMarketplaceBid} />
+    if (page === 'marketplace-cart') return <MarketplaceCartPage cart={cart} listings={listings} purchases={purchases} navigate={navigate} onRemove={(listingId) => setCart((items) => items.filter((item) => item.listingId !== listingId))} onCheckout={(item, phone) => item.orderId ? (setSelectedMarketplaceOrderId(item.orderId), navigate('marketplace-checkout')) : completePurchase(item.listing, item.quantity, phone)} />
     if (page === 'fundraisers') return <FundraisersPage campaigns={campaigns} loading={campaignStatus === 'loading'} error={campaignError} onRetry={() => setCampaignRefresh((value) => value + 1)} onContribute={(campaign) => { setSelectedCampaignId(campaign.id); navigate('campaign-payment') }} />
     if (page === 'campaign-payment') return <CampaignPaymentPage key={selectedCampaignId} campaign={selectedCampaign} resident={authenticatedSession?.user} navigate={navigate} onPaymentConfirmed={refreshCampaignsAfterPayment} />
     if (page === 'notices' && role === 'admin') return <AdminNoticesPage notices={notices} status={noticeStatus} error={noticeError} onRetry={() => setNoticeRefresh((value) => value + 1)} navigate={navigate} onEdit={(notice) => { setSelectedNotice(notice); navigate('notice-edit') }} onDelete={deleteNotice} />
@@ -719,11 +796,21 @@ export default function App() {
 }
 
 function initialPageForPath(pathname) {
+  if (/^\/notifications\/[0-9a-f-]+$/i.test(pathname)) return 'notification-detail'
   if (pathname === '/register') return 'self-register'
   if (pathname === '/setup-password') return 'setup-password'
   if (pathname === '/track-report') return 'track-report'
   if (pathname === '/login' || pathname === '/') return 'login'
   return roleFromPath(pathname) ? 'home' : 'login'
+}
+
+function notificationDestination(path) {
+  if (path === '/marketplace') return 'marketplace'
+  if (path === '/fundraisers') return 'fundraisers'
+  if (path === '/elections') return 'elections'
+  if (path === '/committee/votes') return 'votes'
+  if (path === '/issues') return 'issues'
+  return 'home'
 }
 
 function uiRoleForSession(session) {
